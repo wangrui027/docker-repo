@@ -31,7 +31,7 @@ RUN ARCH=$(uname -m) && \
         "https://github.com/XIU2/CloudflareSpeedTest/releases/download/${CFST_VERSION}/cfst_linux_${CFST_ARCH}.tar.gz" \
         -O /tmp/cfst.tar.gz && \
     mkdir -p /cfst && \
-    tar -xzf /tmp/cfst.tar.gz -C /cfst \
+    tar -xzf /tmp/cfst.tar.gz -C /cfst && \
     rm /tmp/cfst.tar.gz
 
 EXPOSE 8000
