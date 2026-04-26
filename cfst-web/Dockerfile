@@ -21,14 +21,13 @@ ENV CFST_VERSION=${CFST_VERSION}
 # 使用 uname -m 自动检测架构并下载对应版本
 RUN ARCH=$(uname -m) && \
     case $ARCH in \
-        x86_64)  CFST_ARCH="amd64" ;; \
-        aarch64) CFST_ARCH="arm64" ;; \
-        arm64)   CFST_ARCH="arm64" ;; \
+        x86_64)  OS_ARCH="amd64" ;; \
+        aarch64) OS_ARCH="arm64" ;; \
+        arm64)   OS_ARCH="arm64" ;; \
         *)       echo "Unsupported architecture: $ARCH"; exit 1 ;; \
     esac && \
-    echo "Detected architecture: $ARCH -> cfst_linux_${CFST_ARCH}" && \
     wget --tries=3 --timeout=30 \
-        "https://github.com/XIU2/CloudflareSpeedTest/releases/download/${CFST_VERSION}/cfst_linux_${CFST_ARCH}.tar.gz" \
+        "https://github.com/XIU2/CloudflareSpeedTest/releases/download/${CFST_VERSION}/cfst_linux_${OS_ARCH}.tar.gz" \
         -O /tmp/cfst.tar.gz && \
     mkdir -p /cfst && \
     tar -xzf /tmp/cfst.tar.gz -C /cfst && \
