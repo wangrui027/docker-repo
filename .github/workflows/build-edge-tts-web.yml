@@ -41,6 +41,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=sha,prefix=,format=short
 
       - name: 构建并推送多架构镜像
         uses: docker/build-push-action@v6
