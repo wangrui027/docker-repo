@@ -10,6 +10,7 @@ from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, ConfigDict
 
 CFST_PATH = os.environ.get("CFST_PATH", "./CloudflareSpeedTest.exe")
