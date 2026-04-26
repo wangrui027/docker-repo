@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       force_build:
-        description: '强制构建'
+        description: '手动构建'
         required: false
         default: false
         type: boolean
