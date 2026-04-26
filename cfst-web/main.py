@@ -80,6 +80,10 @@ def _parse_result(csv_path: str) -> list[dict]:
 
     return results
 
+@app.get('/')
+async def root():
+    """首页重定向到 /docs"""
+    return RedirectResponse(url='/docs')
 
 @app.get("/speedtest", response_model=SpeedTestResponse)
 def speedtest(
