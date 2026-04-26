@@ -4,12 +4,9 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1
 
-RUN pip install --no-cache-dir fastapi uvicorn edge-tts
+COPY . .
 
-# 使用阿里云镜像加速
-# RUN pip install --no-cache-dir --index-url https://mirrors.aliyun.com/pypi/simple/ fastapi uvicorn edge-tts
-
-COPY main.py .
+RUN pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8000
 
