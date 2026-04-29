@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -152,43 +153,65 @@ type BatchResult struct {
 
 // ---------- 单 URL 检测 ----------
 func checkSingleURL(targetURL string) SingleResult {
-	start := time.Now()
+    start := time.Now()
 
-	req, err := http.NewRequest("GET", targetURL, nil)
-	if err != nil {
-		elapsed := time.Since(start)
-		log.Printf("检测失败 | URL: %s | 耗时: %v | 错误: Invalid URL", targetURL, elapsed)
-		return SingleResult{URL: targetURL, Status: "abnormal", Error: "Invalid URL"}
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "timeout") {
-			errMsg = "Request timeout"
-		} else if strings.Contains(errMsg, "connection refused") || strings.Contains(errMsg, "no such host") {
-			errMsg = "Connection error"
-		} else {
-			errMsg = "Request error: " + errMsg
-		}
-		elapsed := time.Since(start)
-		log.Printf("检测失败 | URL: %s | 耗时: %v | 错误: %s", targetURL, elapsed, errMsg)
-		return SingleResult{URL: targetURL, Status: "abnormal", Error: errMsg}
-	}
-	defer resp.Body.Close()
+    // 发起请求的辅助函数
+    doRequest := func(method string) (*http.Response, error) {
+        req, err := http.NewRequest(method, targetURL, nil)
+        if err != nil {
+            return nil, err
+        }
+        return httpClient.Do(req)
+    }
 
-	code := resp.StatusCode
-	_, normal := config.NormalStatusCodes[code]
-	status := "normal"
-	if !normal {
-		status = "abnormal"
-	}
-	elapsed := time.Since(start)
-	log.Printf("检测成功 | URL: %s | 耗时: %v | 状态码: %d | 判定: %s", targetURL, elapsed, code, status)
-	return SingleResult{
-		URL:    targetURL,
-		Status: status,
-		Code:   code,
-	}
+    // 1. 尝试 HEAD
+    resp, err := doRequest("HEAD")
+    if err == nil {
+        defer resp.Body.Close()
+        code := resp.StatusCode
+        _, normal := config.NormalStatusCodes[code]
+        if normal {
+            // HEAD 成功且状态码正常，直接返回
+            elapsed := time.Since(start)
+            elapsedMs := int(math.Round(float64(elapsed) / float64(time.Millisecond)))
+            log.Printf("检测成功 | URL: %s | 耗时: %d ms | 状态码: %d | 判定: normal (HEAD)", targetURL, elapsedMs, code)
+            return SingleResult{URL: targetURL, Status: "normal", Code: code}
+        }
+        // HEAD 返回的状态码不在正常列表中，降级到 GET
+        log.Printf("HEAD返回非正常状态码 %d，降级为GET", code)
+    } else {
+        // HEAD 请求出错（超时、连接失败等），降级到 GET
+        log.Printf("HEAD请求失败: %v，降级为GET", err)
+    }
+
+    // 2. 降级：使用 GET 请求
+    resp, err = doRequest("GET")
+    if err != nil {
+        errMsg := err.Error()
+        if strings.Contains(errMsg, "timeout") {
+            errMsg = "Request timeout"
+        } else if strings.Contains(errMsg, "connection refused") || strings.Contains(errMsg, "no such host") {
+            errMsg = "Connection error"
+        } else {
+            errMsg = "Request error: " + errMsg
+        }
+        elapsed := time.Since(start)
+        elapsedMs := int(math.Round(float64(elapsed) / float64(time.Millisecond)))
+        log.Printf("检测失败 | URL: %s | 耗时: %d ms | 错误: %s", targetURL, elapsedMs, errMsg)
+        return SingleResult{URL: targetURL, Status: "abnormal", Error: errMsg}
+    }
+    defer resp.Body.Close()
+
+    code := resp.StatusCode
+    _, normal := config.NormalStatusCodes[code]
+    status := "normal"
+    if !normal {
+        status = "abnormal"
+    }
+    elapsed := time.Since(start)
+    elapsedMs := int(math.Round(float64(elapsed) / float64(time.Millisecond)))
+    log.Printf("检测成功 | URL: %s | 耗时: %d ms | 状态码: %d | 判定: %s (GET)", targetURL, elapsedMs, code, status)
+    return SingleResult{URL: targetURL, Status: status, Code: code}
 }
 
 // ---------- 限流器 ----------
