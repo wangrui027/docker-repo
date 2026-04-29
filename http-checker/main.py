@@ -1,22 +1,16 @@
 # main.py
 import os
 import asyncio
+from contextlib import asynccontextmanager
 from typing import List, Dict, Any
+
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 import httpx
 
-app = FastAPI(title="HTTP Status Checker", description="检查URL返回的状态码是否正常")
-
-# 默认允许跨域
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# ---------- 全局变量 ----------
+http_client: httpx.AsyncClient = None
 
 # ---------- 环境变量配置 ----------
 def _parse_status_codes(env_var: str, default: set) -> set:
@@ -32,29 +26,56 @@ def _parse_status_codes(env_var: str, default: set) -> set:
 
 NORMAL_STATUS_CODES = _parse_status_codes("NORMAL_STATUS_CODES", {200, 302, 307, 401, 403})
 TIMEOUT = float(os.getenv("TIMEOUT", "5.0"))
-PROXY = os.getenv("PROXY")  # 可为 None 或 http://proxy.example.com:8080
-MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "50"))  # 批量检测最大数量限制
+PROXY = os.getenv("PROXY")                      # 可为 None 或 http://proxy.example.com:8080
+MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", "50"))   # 批量检测最大数量限制
+MAX_CONCURRENT = int(os.getenv("MAX_CONCURRENT", "10"))   # 批量检测时同时发出的最大请求数
+
+# ---------- 生命周期管理 ----------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global http_client
+    # 启动时创建全局 HTTP 客户端
+    client_kwargs = {
+        "timeout": TIMEOUT,
+        "follow_redirects": False,
+        "limits": httpx.Limits(max_keepalive_connections=20, max_connections=100),
+    }
+    if PROXY:
+        client_kwargs["proxy"] = PROXY
+
+    http_client = httpx.AsyncClient(**client_kwargs)
+    yield
+    # 关闭时清理
+    await http_client.aclose()
+
+# ---------- FastAPI 应用 ----------
+app = FastAPI(
+    title="HTTP Status Checker",
+    description="检查URL返回的状态码是否正常",
+    lifespan=lifespan
+)
+
+# 跨域配置
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ---------- 辅助函数：单 URL 检测 ----------
 async def _check_single_url(url: str) -> Dict[str, Any]:
-    """执行单个 URL 的检测，返回结构化结果"""
+    """使用全局 client 执行单个 URL 检测"""
     try:
-        client_kwargs = {
-            "timeout": TIMEOUT,
-            "follow_redirects": False,
+        response = await http_client.get(url)
+        status_code = response.status_code
+        is_normal = status_code in NORMAL_STATUS_CODES
+        return {
+            "url": url,
+            "status": "normal" if is_normal else "abnormal",
+            "code": status_code,
         }
-        if PROXY:
-            client_kwargs["proxy"] = PROXY
-
-        async with httpx.AsyncClient(**client_kwargs) as client:
-            response = await client.get(url)
-            status_code = response.status_code
-            is_normal = status_code in NORMAL_STATUS_CODES
-            return {
-                "url": url,
-                "status": "normal" if is_normal else "abnormal",
-                "code": status_code,
-            }
     except httpx.TimeoutException:
         return {"url": url, "status": "abnormal", "error": "Request timeout"}
     except httpx.ConnectError:
@@ -71,10 +92,7 @@ async def root():
 
 @app.get("/status")
 async def check_status(url: str = Query(..., description="要测试的URL地址")):
-    """
-    发送GET请求到指定URL，根据响应状态码判断是否正常。
-    状态码是否正常、超时时间、代理地址均由环境变量配置。
-    """
+    """检测单个 URL"""
     return await _check_single_url(url)
 
 @app.post("/status/batch")
@@ -92,11 +110,17 @@ async def batch_check_status(urls: List[str]) -> Dict[str, Any]:
             detail=f"Batch size exceeds limit: {MAX_BATCH_SIZE}"
         )
 
-    # 可选：去除重复 URL（保留顺序）
+    # 去重（保留顺序）
     unique_urls = list(dict.fromkeys(urls))
 
-    # 并发执行所有检测
-    tasks = [_check_single_url(url) for url in unique_urls]
+    # 并发控制：同时最多 MAX_CONCURRENT 个请求
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
+    async def _limited_check(url: str):
+        async with semaphore:
+            return await _check_single_url(url)
+
+    tasks = [_limited_check(url) for url in unique_urls]
     results = await asyncio.gather(*tasks)
 
     normal_count = sum(1 for r in results if r["status"] == "normal")
