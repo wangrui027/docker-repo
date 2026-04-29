@@ -154,6 +154,7 @@ type BatchResult struct {
 func checkSingleURL(targetURL string) SingleResult {
 	req, err := http.NewRequest("GET", targetURL, nil)
 	if err != nil {
+		log.Printf("检测失败 | URL: %s | 错误: Invalid URL", targetURL)
 		return SingleResult{URL: targetURL, Status: "abnormal", Error: "Invalid URL"}
 	}
 	resp, err := httpClient.Do(req)
@@ -166,6 +167,7 @@ func checkSingleURL(targetURL string) SingleResult {
 		} else {
 			errMsg = "Request error: " + errMsg
 		}
+		log.Printf("检测失败 | URL: %s | 错误: %s", targetURL, errMsg)
 		return SingleResult{URL: targetURL, Status: "abnormal", Error: errMsg}
 	}
 	defer resp.Body.Close()
@@ -176,6 +178,7 @@ func checkSingleURL(targetURL string) SingleResult {
 	if !normal {
 		status = "abnormal"
 	}
+	log.Printf("检测成功 | URL: %s | 状态码: %d | 判定: %s", targetURL, code, status)
 	return SingleResult{
 		URL:    targetURL,
 		Status: status,
@@ -287,6 +290,7 @@ func main() {
 	initHTTPClient()
 
 	// 路由
+	http.HandleFunc("/", healthHandler)
 	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/status", singleStatusHandler)
 	http.HandleFunc("/status/batch", batchStatusHandler)
