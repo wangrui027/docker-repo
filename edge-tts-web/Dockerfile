@@ -24,6 +24,6 @@ EXPOSE 8000
 ENTRYPOINT ["/app/tts-server"]
 
 # 心跳检测
-HEALTHCHECK --interval=30s --timeout=5s --start-period=2s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8000/health || exit 1
+HEALTHCHECK --interval=60s --timeout=2s --start-period=2s --retries=3 \
+  CMD nc -z localhost 8000
   
