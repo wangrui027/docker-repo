@@ -249,9 +249,14 @@ func rootHandler(w http.ResponseWriter, r *http.Request) {
 // 打印 /docs 提示（因为 Swagger UI 未实现，输出 JSON 说明）
 func docsHandler(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(map[string]string{
+    json.NewEncoder(w).Encode(map[string]interface{}{
         "message": "TTS API documentation",
-        "endpoints": "/api/v1/audio/speech, /api/v1/audio/list-voices, /health",
+        "endpoints": []string{
+            "/api/v1/audio/speech",
+            "/api/v1/audio/list-voices",
+            "/health",
+            "/docs",
+        },
     })
 }
 
