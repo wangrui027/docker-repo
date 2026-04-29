@@ -171,17 +171,16 @@ func checkSingleURL(targetURL string) SingleResult {
         code := resp.StatusCode
         _, normal := config.NormalStatusCodes[code]
         if normal {
-            // HEAD 成功且状态码正常，直接返回
             elapsed := time.Since(start)
             elapsedMs := int(math.Round(float64(elapsed) / float64(time.Millisecond)))
             log.Printf("检测成功 | URL: %s | 耗时: %d ms | 状态码: %d | 判定: normal (HEAD)", targetURL, elapsedMs, code)
             return SingleResult{URL: targetURL, Status: "normal", Code: code}
         }
-        // HEAD 返回的状态码不在正常列表中，降级到 GET
-        log.Printf("HEAD返回非正常状态码 %d，降级为GET", code)
+        // HEAD 返回非正常状态码，降级到 GET（增加URL）
+        log.Printf("HEAD返回非正常状态码 %d，降级为GET | URL: %s", code, targetURL)
     } else {
-        // HEAD 请求出错（超时、连接失败等），降级到 GET
-        log.Printf("HEAD请求失败: %v，降级为GET", err)
+        // HEAD 请求出错，降级到 GET（增加URL）
+        log.Printf("HEAD请求失败: %v，降级为GET | URL: %s", err, targetURL)
     }
 
     // 2. 降级：使用 GET 请求
