@@ -155,36 +155,12 @@ type BatchResult struct {
 func checkSingleURL(targetURL string) SingleResult {
     start := time.Now()
 
-    // 发起请求的辅助函数
-    doRequest := func(method string) (*http.Response, error) {
-        req, err := http.NewRequest(method, targetURL, nil)
-        if err != nil {
-            return nil, err
-        }
-        return httpClient.Do(req)
+    req, err := http.NewRequest("GET", targetURL, nil)
+    if err != nil {
+        return SingleResult{URL: targetURL, Status: "abnormal", Error: err.Error()}
     }
 
-    // 1. 尝试 HEAD
-    resp, err := doRequest("HEAD")
-    if err == nil {
-        defer resp.Body.Close()
-        code := resp.StatusCode
-        _, normal := config.NormalStatusCodes[code]
-        if normal {
-            elapsed := time.Since(start)
-            elapsedMs := int(math.Round(float64(elapsed) / float64(time.Millisecond)))
-            log.Printf("检测成功 | URL: %s | 耗时: %d ms | 状态码: %d | 判定: normal (HEAD)", targetURL, elapsedMs, code)
-            return SingleResult{URL: targetURL, Status: "normal", Code: code}
-        }
-        // HEAD 返回非正常状态码，降级到 GET（增加URL）
-        log.Printf("HEAD返回非正常状态码 %d，降级为GET | URL: %s", code, targetURL)
-    } else {
-        // HEAD 请求出错，降级到 GET（增加URL）
-        log.Printf("HEAD请求失败: %v，降级为GET | URL: %s", err, targetURL)
-    }
-
-    // 2. 降级：使用 GET 请求
-    resp, err = doRequest("GET")
+    resp, err := httpClient.Do(req)
     if err != nil {
         errMsg := err.Error()
         if strings.Contains(errMsg, "timeout") {
@@ -209,7 +185,7 @@ func checkSingleURL(targetURL string) SingleResult {
     }
     elapsed := time.Since(start)
     elapsedMs := int(math.Round(float64(elapsed) / float64(time.Millisecond)))
-    log.Printf("检测成功 | URL: %s | 耗时: %d ms | 状态码: %d | 判定: %s (GET)", targetURL, elapsedMs, code, status)
+    log.Printf("检测成功 | URL: %s | 耗时: %d ms | 状态码: %d | 判定: %s", targetURL, elapsedMs, code, status)
     return SingleResult{URL: targetURL, Status: status, Code: code}
 }
 
