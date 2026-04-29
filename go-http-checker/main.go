@@ -1,6 +1,7 @@
 package main
 
 import (
+    "crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -84,48 +85,54 @@ func getEnvFloat(key string, defaultVal float64) float64 {
 
 // ---------- 初始化 HTTP 客户端（支持代理） ----------
 func initHTTPClient() {
-	timeoutSec := getEnvFloat("TIMEOUT", 5.0)
-	config.Timeout = time.Duration(timeoutSec * float64(time.Second))
+    timeoutSec := getEnvFloat("TIMEOUT", 5.0)
+    config.Timeout = time.Duration(timeoutSec * float64(time.Second))
 
-	proxyURL := os.Getenv("PROXY") // 例如 http://192.168.100.2:7890
+    proxyURL := os.Getenv("PROXY") // 例如 http://192.168.100.2:7890
 
-	var transport http.RoundTripper
-	if proxyURL != "" {
-		// 支持 http:// 和 socks5://
-		proxyURLParsed, err := url.Parse(proxyURL)
-		if err == nil {
-			if proxyURLParsed.Scheme == "socks5" {
-				// 使用 golang.org/x/net/proxy
-				dialer, err := proxy.SOCKS5("tcp", proxyURLParsed.Host, nil, proxy.Direct)
-				if err == nil {
-					transport = &http.Transport{
-						Dial: dialer.Dial,
-					}
-				} else {
-					log.Printf("Failed to create SOCKS5 dialer: %v", err)
-				}
-			} else {
-				// http/https 代理
-				transport = &http.Transport{
-					Proxy: http.ProxyURL(proxyURLParsed),
-				}
-			}
-		}
-	}
-	if transport == nil {
-		transport = &http.Transport{
-			MaxIdleConns:    100,
-			IdleConnTimeout: 90 * time.Second,
-		}
-	}
+    // 统一的 TLS 配置：忽略证书验证
+    tlsConfig := &tls.Config{
+        InsecureSkipVerify: true,
+    }
 
-	httpClient = &http.Client{
-		Timeout:   config.Timeout,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse // 不跟随重定向
-		},
-	}
+    var transport http.RoundTripper
+    if proxyURL != "" {
+        proxyURLParsed, err := url.Parse(proxyURL)
+        if err == nil {
+            if proxyURLParsed.Scheme == "socks5" {
+                dialer, err := proxy.SOCKS5("tcp", proxyURLParsed.Host, nil, proxy.Direct)
+                if err == nil {
+                    transport = &http.Transport{
+                        Dial:           dialer.Dial,
+                        TLSClientConfig: tlsConfig,   // 添加
+                    }
+                } else {
+                    log.Printf("Failed to create SOCKS5 dialer: %v", err)
+                }
+            } else {
+                // http/https 代理
+                transport = &http.Transport{
+                    Proxy:           http.ProxyURL(proxyURLParsed),
+                    TLSClientConfig: tlsConfig,       // 添加
+                }
+            }
+        }
+    }
+    if transport == nil {
+        transport = &http.Transport{
+            MaxIdleConns:    100,
+            IdleConnTimeout: 90 * time.Second,
+            TLSClientConfig: tlsConfig,               // 添加
+        }
+    }
+
+    httpClient = &http.Client{
+        Timeout:   config.Timeout,
+        Transport: transport,
+        CheckRedirect: func(req *http.Request, via []*http.Request) error {
+            return http.ErrUseLastResponse // 不跟随重定向
+        },
+    }
 }
 
 // ---------- 响应结构 ----------
