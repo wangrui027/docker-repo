@@ -237,8 +237,12 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
     })
 }
 
-// 根路径重定向到 /docs（保持与 FastAPI 行为一致）
+// 根路径重定向到 /docs，其他未匹配路径返回 404
 func rootHandler(w http.ResponseWriter, r *http.Request) {
+    if r.URL.Path != "/" {
+        http.NotFound(w, r)
+        return
+    }
     http.Redirect(w, r, "/docs", http.StatusFound)
 }
 

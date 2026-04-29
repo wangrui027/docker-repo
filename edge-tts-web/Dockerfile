@@ -10,9 +10,10 @@ RUN go mod init tts-server && \
 # 第二阶段：基于 python:alpine，安装 edge-tts，复制二进制
 FROM python:alpine
 
-# 安装 edge-tts（需要 pip）
-RUN pip install --no-cache-dir edge-tts
-
+# 安装 edge-tts 和 wget
+RUN pip install --no-cache-dir edge-tts && \
+    command -v wget || apk add --no-cache wget
+	
 # 复制 Go 二进制
 COPY --from=builder /app/tts-server /app/tts-server
 
@@ -21,3 +22,8 @@ EXPOSE 8000
 
 # 运行 Go 服务
 ENTRYPOINT ["/app/tts-server"]
+
+# 心跳检测
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider --max-redirect=0 http://localhost:8000/health || exit 1
+  
