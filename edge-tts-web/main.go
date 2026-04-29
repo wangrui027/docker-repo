@@ -49,13 +49,12 @@ func loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
             decodedPath = decodedPath + "?" + query
         }
 
-        fmt.Printf("%s - - [%s] \"%s %s HTTP/1.1\" %d %d\n",
+        fmt.Printf("%s - [%s] \"%s %s HTTP/1.1\" %d\n",
             r.RemoteAddr,
             time.Now().Format("02/Jan/2006 15:04:05"),
             r.Method,
             decodedPath,
             rw.statusCode,
-            r.ContentLength,
         )
     }
 }
