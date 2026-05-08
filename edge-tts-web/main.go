@@ -4,6 +4,7 @@ import (
     "encoding/json"
     "fmt"
     "io"
+    "net"
     "net/http"
     "net/url"
     "os"
@@ -28,29 +29,43 @@ type Voice struct {
     Languages string `json:"languages"`
 }
 
+func getClientIP(r *http.Request) string {
+    // 优先取 X-Forwarded-For 的第一个 IP（最原始客户端）
+    if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+        ips := strings.Split(xff, ",")
+        if len(ips) > 0 {
+            return strings.TrimSpace(ips[0])
+        }
+    }
+    // 其次取 X-Real-IP
+    if xri := r.Header.Get("X-Real-IP"); xri != "" {
+        return xri
+    }
+    // 最后回退到 RemoteAddr（但要截掉端口号）
+    host, _, err := net.SplitHostPort(r.RemoteAddr)
+    if err != nil {
+        return r.RemoteAddr
+    }
+    return host
+}
+
 // 日志中间件
 func loggingMiddleware(next http.HandlerFunc) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
         rw := &responseWriter{w, http.StatusOK}
         next.ServeHTTP(rw, r)
 
-        // 路径部分已自动解码（例如 /你好）
         decodedPath := r.URL.Path
-
-        // 查询参数需要手动解码
-        query := r.URL.RawQuery
-        if query != "" {
-            decodedQuery, err := url.QueryUnescape(query)
-            if err == nil {
-                // QueryUnescape 不会将 '+' 转换为空格，但标准中 '+' 表示空格，需显式替换
+        if query := r.URL.RawQuery; query != "" {
+            if decodedQuery, err := url.QueryUnescape(query); err == nil {
                 decodedQuery = strings.ReplaceAll(decodedQuery, "+", " ")
-                query = decodedQuery
+                decodedPath = decodedPath + "?" + decodedQuery
             }
-            decodedPath = decodedPath + "?" + query
         }
 
+        clientIP := getClientIP(r)
         fmt.Printf("%s - [%s] \"%s %s HTTP/1.1\" %d\n",
-            r.RemoteAddr,
+            clientIP,
             time.Now().Format("02/Jan/2006 15:04:05"),
             r.Method,
             decodedPath,
