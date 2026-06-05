@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 版本号可随时修改
-ARG CFST_VERSION=v2.3.4
+ARG CFST_VERSION=v2.3.5
 ENV CFST_VERSION=${CFST_VERSION}
 
 # 使用 uname -m 自动检测架构并下载对应版本
