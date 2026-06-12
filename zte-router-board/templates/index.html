@@ -273,7 +273,7 @@
         <div id="downloadChart" class="chart-box"></div>
         <div id="uploadChart" class="chart-box"></div>
     </div>
-    <div class="footer-note">数据来源于中兴路由器 · 每10秒刷新</div>
+    <div class="footer-note">数据来源于中兴路由器 · 每{{ fetch_interval }}秒刷新</div>
 </div>
 
 <script>
@@ -875,7 +875,7 @@
         if (refreshTimer) clearInterval(refreshTimer);
         await fetchAllData();  // 首次加载等待完成后再隐藏 loading
         hideLoading();
-        refreshTimer = setInterval(() => { fetchAllData(); }, 10000);
+        refreshTimer = setInterval(() => { fetchAllData(); }, {{ fetch_interval * 1000 }});
     }
 
     document.addEventListener('DOMContentLoaded', async () => {

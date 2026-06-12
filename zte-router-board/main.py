@@ -575,7 +575,7 @@ def fetch_and_process():
 
 @app.route('/')
 def dashboard():
-    return render_template('index.html')
+    return render_template('index.html', fetch_interval=FETCH_INTERVAL_SECONDS)
 
 
 # ---------- HTTP 服务接口 ----------
@@ -824,7 +824,7 @@ if __name__ == '__main__':
 
     init_db()
     fetch_and_process()
-    schedule.every(10).seconds.do(fetch_and_process)
+    schedule.every(FETCH_INTERVAL_SECONDS).seconds.do(fetch_and_process)
     schedule.every().day.at("02:00").do(cleanup_old_data)
     threading.Thread(target=run_schedule, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, debug=False)
