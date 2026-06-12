@@ -340,12 +340,15 @@
         const hours = Math.floor((totalSec % 86400) / 3600);
         const mins = Math.floor((totalSec % 3600) / 60);
         const secs = totalSec % 60;
-        let parts = [];
-        if (days > 0) parts.push(days + '天');
-        if (hours > 0) parts.push(hours + '时');
-        if (mins > 0) parts.push(mins + '分');
-        if (secs > 0 || parts.length === 0) parts.push(secs + '秒');
-        return parts.join('');
+        if (totalSec < 60) {
+            return secs + '秒';
+        } else if (totalSec < 3600) {
+            return mins + '分' + secs + '秒';
+        } else if (totalSec < 86400) {
+            return hours + '小时' + mins + '分';
+        } else {
+            return days + '天' + hours + '小时';
+        }
     }
 
     function updateTableDuration(mac) {
