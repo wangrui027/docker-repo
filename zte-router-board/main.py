@@ -167,7 +167,6 @@ def init_db():
         conn.execute('CREATE INDEX IF NOT EXISTS idx_device_info_mac ON device_info(macaddress)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_device_info_last_seen ON device_info(last_seen)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_device_info_offline_time ON device_info(offline_time)')
-    log_info("数据库初始化完成（device_info 表已增加最新速率及最新流量字段）")
 
 
 def normalize_sntp_time(sntp_str):
