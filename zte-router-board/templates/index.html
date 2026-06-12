@@ -266,6 +266,9 @@
             <button class="time-btn" data-minutes="60">最近1小时</button>
             <button class="time-btn" data-minutes="360">最近6小时</button>
             <button class="time-btn" data-minutes="1440">最近一天</button>
+            <label style="margin-left:12px;cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;gap:4px;">
+                <input type="checkbox" id="linkChartsCheckbox" checked> 联动图表
+            </label>
         </div>
         <div id="downloadChart" class="chart-box"></div>
         <div id="uploadChart" class="chart-box"></div>
@@ -286,6 +289,8 @@
     const STORAGE_KEY = 'selected_macs_for_speed_chart';
     const TIME_RANGE_KEY = 'selected_time_range_minutes';
     const LEGEND_STATE_KEY = 'chart_legend_selected_state';
+    const LINK_CHARTS_KEY = 'link_charts_enabled';
+    let chartLinked = true;  // 默认开启联动
 
     // 辅助函数
     function formatBytes(bytes) {
@@ -619,6 +624,13 @@
                 legend: { data: downloadNames, selected: downloadSelected }
             }, true);
 
+            // 根据联动开关状态 connect 或 disconnect
+            if (chartLinked) {
+                echarts.connect('speedGroup');
+            } else {
+                echarts.disconnect('speedGroup');
+            }
+
         } catch (err) {
             console.error('刷新曲线失败', err);
             uploadChart?.setOption({ title: { text: '加载曲线数据失败', left: 'center', top: 'center' } });
@@ -656,12 +668,40 @@
         }
     }
 
+    function restoreLinkChartsState() {
+        const stored = localStorage.getItem(LINK_CHARTS_KEY);
+        if (stored !== null) {
+            chartLinked = stored === 'true';
+            const cb = document.getElementById('linkChartsCheckbox');
+            if (cb) cb.checked = chartLinked;
+        }
+    }
+
+    function bindLinkChartsCheckbox() {
+        const cb = document.getElementById('linkChartsCheckbox');
+        if (!cb) return;
+        cb.addEventListener('change', () => {
+            chartLinked = cb.checked;
+            localStorage.setItem(LINK_CHARTS_KEY, chartLinked);
+            // 立即生效：根据开关 connect 或 disconnect
+            if (chartLinked) {
+                echarts.connect('speedGroup');
+            } else {
+                echarts.disconnect('speedGroup');
+            }
+        });
+    }
+
     function initCharts() {
         uploadChart = echarts.init(document.getElementById('uploadChart'));
         downloadChart = echarts.init(document.getElementById('downloadChart'));
 
-        // 联动：鼠标悬停任一图表时，另一图表同步显示对应时刻的数据
-        echarts.connect('speedGroup');
+        // 设置 group，用于 connect/disconnect 联动控制
+        uploadChart.group = 'speedGroup';
+        downloadChart.group = 'speedGroup';
+        if (chartLinked) {
+            echarts.connect('speedGroup');
+        }
 
         // 图例切换时保存选中状态到本地缓存
         uploadChart.on('legendselectchanged', function(params) {
@@ -771,8 +811,10 @@
     document.addEventListener('DOMContentLoaded', async () => {
         restoreSelectedMacs();
         restoreTimeRange();
+        restoreLinkChartsState();
         initCharts();
         bindTimeSelector();
+        bindLinkChartsCheckbox();
         bindSelectAllCheckbox();
         startTickTimer();
         await startAutoRefresh();
