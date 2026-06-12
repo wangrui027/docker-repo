@@ -549,7 +549,6 @@ def fetch_and_process():
         if matched_macs:
             with db_lock:
                 update_devices_offline(matched_macs)
-                log_info("已标记未出现设备为离线")
         if source == 'plugin':
             with lock:
                 last_valid_time = time.time()
@@ -567,7 +566,7 @@ def dashboard():
 
 
 # ---------- HTTP 服务接口 ----------
-@app.route('/update-cookie', methods=['POST'])
+@app.route('/api/update-cookie', methods=['POST'])
 def update_cookie():
     global plugin_cookie, last_valid_cookie, last_valid_time
     data = request.get_json()
