@@ -51,7 +51,7 @@ db_lock = threading.Lock()  # 数据库写入锁
 # 日志工具
 def log_info(msg):
     if LOG_LEVEL == "INFO":
-        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [INFO] {msg}")
 
 
 def log_warning(msg):
