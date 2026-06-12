@@ -41,7 +41,7 @@ VALID_CACHE_SECONDS = 30  # 相同Cookie跳过验证的缓存时长（秒）
 LOG_LEVEL = "INFO"  # "INFO" 或 "WARNING"
 
 # ===== 数据库配置 =====
-DB_FILE = "lan_devices.db"
+DB_FILE = "data/data.db"
 db_lock = threading.Lock()  # 数据库写入锁
 
 # =====================
@@ -77,6 +77,8 @@ def parse_time_to_datetime(time_str):
 # ===== 数据库初始化函数 =====
 def init_db():
     """创建设备信息表、历史记录表、速率表及索引，并启动每日清理任务"""
+    # 确保 data 目录存在
+    Path(DB_FILE).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(DB_FILE) as conn:
         # 设备信息表（自动维护）
         conn.execute('''

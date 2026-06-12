@@ -194,6 +194,42 @@
             .device-table th, .device-table td { padding: 9px 6px; font-size: 0.75rem; }
             .duration-text { font-size: 0.7rem; padding: 2px 5px; }
         }
+
+        /* 全屏加载遮罩 */
+        .loading-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+            transition: opacity 0.4s ease;
+        }
+        .loading-overlay.fade-out {
+            opacity: 0;
+            pointer-events: none;
+        }
+        .loading-overlay.hidden {
+            display: none;
+        }
+        .loading-spinner {
+            width: 48px; height: 48px;
+            border: 4px solid rgba(255,255,255,0.3);
+            border-top-color: #fff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .loading-text {
+            color: #fff;
+            margin-top: 1rem;
+            font-size: 1rem;
+            letter-spacing: 0.05em;
+        }
     </style>
 </head>
 <body>
@@ -225,15 +261,16 @@
         <div class="chart-title">📈 实时速率趋势</div>
         <div class="time-selector" id="timeSelector">
             <span>时间范围：</span>
-            <button class="time-btn active" data-hours="1">最近1小时</button>
-            <button class="time-btn" data-hours="6">最近6小时</button>
-            <button class="time-btn" data-hours="24">最近24小时</button>
-            <button class="time-btn" data-hours="72">最近3天</button>
+            <button class="time-btn active" data-minutes="10">最近10分钟</button>
+            <button class="time-btn" data-minutes="30">最近30分钟</button>
+            <button class="time-btn" data-minutes="60">最近1小时</button>
+            <button class="time-btn" data-minutes="360">最近6小时</button>
+            <button class="time-btn" data-minutes="1440">最近一天</button>
         </div>
         <div id="uploadChart" class="chart-box"></div>
         <div id="downloadChart" class="chart-box"></div>
     </div>
-    <div class="footer-note">数据来源于中兴路由器 · 每10秒刷新核心数据</div>
+    <div class="footer-note">数据来源于中兴路由器 · 每10秒刷新</div>
 </div>
 
 <script>
@@ -241,12 +278,14 @@
     let allDevices = [];
     let selectedMacs = new Set();
     let uploadChart, downloadChart;
-    let currentTimeRange = 1;
+    let currentTimeRange = 10;  // 默认10分钟
     let refreshTimer = null;
     let tickTimer = null;
     let deviceBaseData = new Map();
 
     const STORAGE_KEY = 'selected_macs_for_speed_chart';
+    const TIME_RANGE_KEY = 'selected_time_range_minutes';
+    const LEGEND_STATE_KEY = 'chart_legend_selected_state';
 
     // 辅助函数
     function formatBytes(bytes) {
@@ -369,7 +408,7 @@
             }
 
             renderDeviceTable();
-            if (selectedMacs.size > 0) refreshCharts();
+            if (selectedMacs.size > 0) await refreshCharts();
         } catch (err) {
             console.error('获取数据失败', err);
         }
@@ -426,6 +465,7 @@
                     selectedMacs.add(mac);
                 } else {
                     selectedMacs.delete(mac);
+                    clearLegendStateForRemovedMacs([mac]);
                 }
                 // 更新全选框状态
                 updateSelectAllCheckbox();
@@ -461,6 +501,7 @@
         selectAllCheckbox.addEventListener('change', (e) => {
             const isChecked = e.target.checked;
             const allDeviceCheckboxes = document.querySelectorAll('.device-checkbox');
+            const removedMacs = [];
 
             allDeviceCheckboxes.forEach(cb => {
                 cb.checked = isChecked;
@@ -469,8 +510,13 @@
                     selectedMacs.add(mac);
                 } else {
                     selectedMacs.delete(mac);
+                    removedMacs.push(mac);
                 }
             });
+
+            if (removedMacs.length > 0) {
+                clearLegendStateForRemovedMacs(removedMacs);
+            }
 
             localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(selectedMacs)));
             refreshCharts();
@@ -500,7 +546,7 @@
 
         const endDate = new Date();
         const endTime = formatBeijingTime(endDate);
-        const startDate = new Date(endDate.getTime() - currentTimeRange * 3600000);
+        const startDate = new Date(endDate.getTime() - currentTimeRange * 60000);
         const startTimeStr = formatBeijingTime(startDate);
 
         try {
@@ -555,18 +601,22 @@
                 grid:  { containLabel: true, top: 40, bottom: 20, left: 60, right: 60 }
             };
 
+            const uploadNames = uploadSeries.map(s => s.name);
+            const uploadSelected = getLegendSelected('upload', uploadNames);
             uploadChart.setOption({
                 ...commonOption,
                 title: { text: '上\n传\n速\n率', left: 15, top: 'middle' },
                 series: uploadSeries,
-                legend: { data: uploadSeries.map(s => s.name) }
+                legend: { data: uploadNames, selected: uploadSelected }
             }, true);
 
+            const downloadNames = downloadSeries.map(s => s.name);
+            const downloadSelected = getLegendSelected('download', downloadNames);
             downloadChart.setOption({
                 ...commonOption,
                 title: { text: '下\n载\n速\n率', left: 15, top: 'middle' },
                 series: downloadSeries,
-                legend: { data: downloadSeries.map(s => s.name) }
+                legend: { data: downloadNames, selected: downloadSelected }
             }, true);
 
         } catch (err) {
@@ -582,16 +632,104 @@
             btn.addEventListener('click', () => {
                 btns.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
-                currentTimeRange = parseInt(btn.dataset.hours, 10);
+                currentTimeRange = parseInt(btn.dataset.minutes, 10);
+                localStorage.setItem(TIME_RANGE_KEY, currentTimeRange);
                 if (selectedMacs.size > 0) refreshCharts();
             });
         });
     }
 
+    function restoreTimeRange() {
+        const stored = localStorage.getItem(TIME_RANGE_KEY);
+        if (stored) {
+            const minutes = parseInt(stored, 10);
+            if (!isNaN(minutes) && minutes > 0) {
+                currentTimeRange = minutes;
+                const btns = document.querySelectorAll('.time-btn');
+                btns.forEach(b => {
+                    b.classList.remove('active');
+                    if (parseInt(b.dataset.minutes, 10) === minutes) {
+                        b.classList.add('active');
+                    }
+                });
+            }
+        }
+    }
+
     function initCharts() {
         uploadChart = echarts.init(document.getElementById('uploadChart'));
         downloadChart = echarts.init(document.getElementById('downloadChart'));
+
+        // 图例切换时保存选中状态到本地缓存
+        uploadChart.on('legendselectchanged', function(params) {
+            saveLegendState('upload', params.selected);
+        });
+        downloadChart.on('legendselectchanged', function(params) {
+            saveLegendState('download', params.selected);
+        });
+
         window.addEventListener('resize', () => { uploadChart?.resize(); downloadChart?.resize(); });
+    }
+
+    function saveLegendState(chartKey, selectedMap) {
+        try {
+            let allState = {};
+            const stored = localStorage.getItem(LEGEND_STATE_KEY);
+            if (stored) {
+                allState = JSON.parse(stored);
+            }
+            allState[chartKey] = selectedMap;
+            localStorage.setItem(LEGEND_STATE_KEY, JSON.stringify(allState));
+        } catch(e) {}
+    }
+
+    function getLegendSelected(chartKey, currentNames) {
+        try {
+            const stored = localStorage.getItem(LEGEND_STATE_KEY);
+            if (!stored) return {};
+            const allState = JSON.parse(stored);
+            const saved = allState[chartKey] || {};
+            // 只保留当前仍存在的设备名，过滤掉已移除设备的旧状态
+            const filtered = {};
+            for (let name of currentNames) {
+                if (saved.hasOwnProperty(name)) {
+                    filtered[name] = saved[name];
+                }
+            }
+            return filtered;
+        } catch(e) { return {}; }
+    }
+
+    // 取消勾选设备时，清除其图例缓存，下次重新勾选时默认显示曲线
+    function clearLegendStateForRemovedMacs(removedMacs) {
+        if (!removedMacs || removedMacs.length === 0) return;
+        try {
+            // MAC → 设备名 映射
+            const namesToRemove = new Set();
+            for (let mac of removedMacs) {
+                const dev = allDevices.find(d => d.mac === mac);
+                if (dev) namesToRemove.add(dev.devname);
+            }
+            if (namesToRemove.size === 0) return;
+
+            const stored = localStorage.getItem(LEGEND_STATE_KEY);
+            if (!stored) return;
+            const allState = JSON.parse(stored);
+            let changed = false;
+            for (let chartKey of ['upload', 'download']) {
+                if (allState[chartKey]) {
+                    for (let name of namesToRemove) {
+                        if (allState[chartKey].hasOwnProperty(name)) {
+                            delete allState[chartKey][name];
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if (changed) {
+                localStorage.setItem(LEGEND_STATE_KEY, JSON.stringify(allState));
+            }
+        } catch(e) {}
     }
 
     function escapeHtml(str) { return str.replace(/[&<>]/g, function(m){if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
@@ -611,20 +749,35 @@
         }
     }
 
-    function startAutoRefresh() {
+    function hideLoading() {
+        const overlay = document.getElementById('loadingOverlay');
+        if (!overlay) return;
+        overlay.classList.add('fade-out');
+        overlay.addEventListener('transitionend', () => {
+            overlay.classList.add('hidden');
+        }, { once: true });
+    }
+
+    async function startAutoRefresh() {
         if (refreshTimer) clearInterval(refreshTimer);
-        fetchAllData();
+        await fetchAllData();  // 首次加载等待完成后再隐藏 loading
+        hideLoading();
         refreshTimer = setInterval(() => { fetchAllData(); }, 10000);
     }
 
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
         restoreSelectedMacs();
+        restoreTimeRange();
         initCharts();
         bindTimeSelector();
         bindSelectAllCheckbox();
         startTickTimer();
-        startAutoRefresh();
+        await startAutoRefresh();
     });
 </script>
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">加载中...</div>
+    </div>
 </body>
 </html>
