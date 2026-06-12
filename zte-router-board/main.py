@@ -818,6 +818,10 @@ def run_schedule():
 
 
 if __name__ == '__main__':
+    # 关闭 Flask / Werkzeug 的 access 日志
+    import logging
+    logging.getLogger('werkzeug').setLevel(logging.WARNING)
+
     init_db()
     fetch_and_process()
     schedule.every(10).seconds.do(fetch_and_process)
