@@ -58,6 +58,19 @@ def log_warning(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [WARN] {msg}")
 
 
+# 获取请求的真实客户端 IP（支持反向代理）
+def get_client_ip():
+    """优先从 X-Forwarded-For / X-Real-IP 获取，fallback 到 remote_addr"""
+    x_forwarded_for = request.headers.get('X-Forwarded-For', '')
+    if x_forwarded_for:
+        # X-Forwarded-For 格式: client, proxy1, proxy2，取第一个
+        return x_forwarded_for.split(',')[0].strip()
+    x_real_ip = request.headers.get('X-Real-IP', '')
+    if x_real_ip:
+        return x_real_ip.strip()
+    return request.remote_addr or 'unknown IP'
+
+
 # ========== 时间解析辅助函数 ==========
 def parse_time_to_datetime(time_str):
     """尝试解析两种常见时间格式，返回 datetime 对象或 None"""
@@ -569,27 +582,31 @@ def dashboard():
 @app.route('/api/update-cookie', methods=['POST'])
 def update_cookie():
     global plugin_cookie, last_valid_cookie, last_valid_time
+    client_ip = get_client_ip()
     data = request.get_json()
     cookie_str = data.get('cookies')
+    log_info(f"[{client_ip}] 接收到Cookie更新请求")
     if not cookie_str:
+        log_warning(f"[{client_ip}] 收到空Cookie请求")
         return jsonify({"status": "error", "message": "No cookies"}), 400
     if 'sidebarStatus=' not in cookie_str or 'SID=' not in cookie_str:
-        log_info("收到不完整Cookie（缺少sidebarStatus或SID），忽略")
+        log_info(f"[{client_ip}] 收到不完整Cookie（缺少sidebarStatus或SID），忽略")
         return jsonify({"status": "ignored", "message": "Incomplete cookie"}), 200
     if cookie_str in invalid_cookies:
+        log_info(f"[{client_ip}] Cookie已在黑名单中，忽略")
         return jsonify({"status": "ignored", "message": "Invalid cookie (blacklisted)"}), 200
     now = time.time()
     if cookie_str == last_valid_cookie and (now - last_valid_time) < VALID_CACHE_SECONDS:
         with lock:
             if plugin_cookie != cookie_str:
                 plugin_cookie = cookie_str
-                log_info("插件Cookie已同步（缓存命中）")
+                log_info(f"[{client_ip}] 插件Cookie已同步（缓存命中）")
         return jsonify({"status": "ok", "cached": True})
     if not task_lock.acquire(timeout=10):
-        log_warning("无法获取任务锁，采集任务可能长时间运行，放弃本次验证")
+        log_warning(f"[{client_ip}] 无法获取任务锁，采集任务可能长时间运行，放弃本次验证")
         return jsonify({"status": "error", "message": "Task busy"}), 503
     try:
-        log_info("验证插件Cookie有效性...")
+        log_info(f"[{client_ip}] 验证插件Cookie有效性...")
         is_valid = validate_cookie_string(cookie_str)
         if is_valid:
             with lock:
@@ -598,14 +615,14 @@ def update_cookie():
                     invalid_cookies.discard(cookie_str)
                 last_valid_cookie = cookie_str
                 last_valid_time = now
-            log_warning("插件Cookie有效，已更新")
+            log_warning(f"[{client_ip}] 插件Cookie有效，已更新")
         else:
             with lock:
                 invalid_cookies.add(cookie_str)
                 if plugin_cookie == cookie_str:
                     plugin_cookie = None
                 reset_valid_cache()
-            log_warning("插件Cookie无效，已加入黑名单")
+            log_warning(f"[{client_ip}] 插件Cookie无效，已加入黑名单")
         return jsonify({"status": "ok" if is_valid else "invalid"})
     finally:
         task_lock.release()
