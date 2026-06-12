@@ -405,6 +405,7 @@ lock = threading.Lock()
 task_lock = threading.Lock()
 
 app = Flask(__name__)
+app.config['TEMPLATES_AUTO_RELOAD'] = True  # 模板自动重载：修改 HTML 后无需重启
 
 
 # ---------- Cookie 辅助函数 ----------

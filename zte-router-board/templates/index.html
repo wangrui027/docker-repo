@@ -89,7 +89,7 @@
             font-weight: 500;
             white-space: nowrap;
         }
-        /* 速率样式调整 - 515KB/s 显示橙色 */
+        /* 速率样式调整 - 512KB/s 显示橙色 */
         .speed-normal {
             font-weight: 600;
             color: #1e293b;
@@ -307,11 +307,11 @@
         return (kbps/1024).toFixed(1) + ' MB/s';
     }
 
-    // 根据速率（KB/s）返回样式类 - 调整为515KB/s显示橙色
+    // 根据速率（KB/s）返回样式类 - 调整为512KB/s显示橙色
     function getSpeedClass(kbps) {
         if (kbps === undefined || kbps === null) return 'speed-normal';
-        if (kbps >= 515) return 'speed-warning'; // 515KB/s及以上显示橙色
-        if (kbps >= 1024) return 'speed-critical'; // 1MB/s及以上显示红色
+        if (kbps >= 1024) return 'speed-critical'; // ≥1MB/s 红色
+        if (kbps >= 512) return 'speed-warning';   // ≥512KB/s 橙色
         return 'speed-normal';
     }
 
@@ -598,8 +598,35 @@
                 return;
             }
 
+            const tooltipSpeedColor = function(kbps) {
+                if (kbps === undefined || kbps === null) return '#1e293b';
+                if (kbps >= 1024) return '#dc2626';     // ≥1MB/s 红色
+                if (kbps >= 512) return '#f97316';      // ≥512KB/s 橙色
+                return '#1e293b';                        // 默认
+            };
+
             const commonOption = {
-                tooltip: { trigger: 'axis', valueFormatter: (value) => value?.toFixed(2) + ' KB/s' },
+                tooltip: {
+                    trigger: 'axis',
+                    formatter: function(params) {
+                        if (!params || params.length === 0) return '';
+                        const timeLabel = formatBeijingTime(new Date(params[0].axisValue));
+                        let html = '<div style="margin-bottom:4px">' + timeLabel + '</div>';
+                        for (let i = 0; i < params.length; i++) {
+                            const p = params[i];
+                            const kbps = p.value[1];
+                            const color = tooltipSpeedColor(kbps);
+                            const val = formatSpeed(kbps);
+                            html += '<div style="display:flex;align-items:center;min-width:220px">'
+                                + p.marker
+                                + '<span>' + p.seriesName + '</span>'
+                                + '<span style="flex:1"></span>'
+                                + '<span style="font-weight:600;color:' + color + '">' + val + '</span>'
+                                + '</div>';
+                        }
+                        return html;
+                    }
+                },
                 xAxis: { type: 'time', name: '时间', axisLabel: { rotate: 30 } },
                 yAxis: { type: 'value', name: '速率 (KB/s)' },
                 legend: { orient: 'vertical', left: 'left', top: 'middle' },
@@ -683,13 +710,32 @@
         cb.addEventListener('change', () => {
             chartLinked = cb.checked;
             localStorage.setItem(LINK_CHARTS_KEY, chartLinked);
-            // 立即生效：根据开关 connect 或 disconnect
             if (chartLinked) {
+                // 连接前先同步图例状态：以上传图表的图例为准，覆盖下载图表
+                syncLegendForConnect();
                 echarts.connect('speedGroup');
             } else {
                 echarts.disconnect('speedGroup');
             }
         });
+    }
+
+    // 连接联动时，以上传图表的图例状态为准，同步到下载图表
+    function syncLegendForConnect() {
+        try {
+            const stored = localStorage.getItem(LEGEND_STATE_KEY);
+            if (!stored) return;
+            const allState = JSON.parse(stored);
+            const uploadState = allState['upload'];
+            if (!uploadState) return;
+            // 对齐 localStorage
+            allState['download'] = Object.assign({}, uploadState);
+            localStorage.setItem(LEGEND_STATE_KEY, JSON.stringify(allState));
+            // 立即应用到下载图表
+            if (downloadChart) {
+                downloadChart.setOption({ legend: { selected: uploadState } });
+            }
+        } catch(e) {}
     }
 
     function initCharts() {
@@ -704,11 +750,26 @@
         }
 
         // 图例切换时保存选中状态到本地缓存
+        // 联动开启时，以当前点击的图表为准，强制同步到另一个图表
+        let legendSyncLock = false;
+
         uploadChart.on('legendselectchanged', function(params) {
+            if (legendSyncLock) return;
             saveLegendState('upload', params.selected);
+            if (chartLinked) {
+                legendSyncLock = true;
+                downloadChart.setOption({ legend: { selected: params.selected } });
+                legendSyncLock = false;
+            }
         });
         downloadChart.on('legendselectchanged', function(params) {
+            if (legendSyncLock) return;
             saveLegendState('download', params.selected);
+            if (chartLinked) {
+                legendSyncLock = true;
+                uploadChart.setOption({ legend: { selected: params.selected } });
+                legendSyncLock = false;
+            }
         });
 
         window.addEventListener('resize', () => { uploadChart?.resize(); downloadChart?.resize(); });
@@ -721,7 +782,13 @@
             if (stored) {
                 allState = JSON.parse(stored);
             }
-            allState[chartKey] = selectedMap;
+            if (chartLinked) {
+                // 联动开启时，两个图表图例状态保持一致
+                allState['upload'] = selectedMap;
+                allState['download'] = selectedMap;
+            } else {
+                allState[chartKey] = selectedMap;
+            }
             localStorage.setItem(LEGEND_STATE_KEY, JSON.stringify(allState));
         } catch(e) {}
     }
