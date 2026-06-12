@@ -660,6 +660,9 @@
         uploadChart = echarts.init(document.getElementById('uploadChart'));
         downloadChart = echarts.init(document.getElementById('downloadChart'));
 
+        // 联动：鼠标悬停任一图表时，另一图表同步显示对应时刻的数据
+        echarts.connect('speedGroup');
+
         // 图例切换时保存选中状态到本地缓存
         uploadChart.on('legendselectchanged', function(params) {
             saveLegendState('upload', params.selected);
