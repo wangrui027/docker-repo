@@ -372,12 +372,11 @@
         return (kbps/1024).toFixed(1) + ' MB/s';
     }
 
-    // 限速信息显示（Kbps → KB/s 或 MB/s）
+    // 限速信息显示（Kbps → Mbps）
     function formatQosLimit(kbps) {
-        if (!kbps || kbps === 0) return '0.00 KB/s';
-        const kbs = kbps / 8;  // Kbps → KB/s
-        if (kbs < 1024) return kbs.toFixed(2) + ' KB/s';
-        return (kbs / 1024).toFixed(2) + ' MB/s';
+        if (!kbps || kbps === 0) return '0 Mbps';
+        const mbps = kbps / 1000;  // Kbps → Mbps
+        return mbps.toFixed(2) + ' Mbps';
     }
 
     function renderQosCell(dev) {
@@ -1026,8 +1025,16 @@
                 duration_minutes: durationMin
             });
             if (resp.data.status === 'ok') {
+                // 乐观更新：立即写入内存数据，避免重新打开弹窗时看到旧值
+                const dev = allDevices.find(d => d.mac === qosModalMac);
+                if (dev) {
+                    dev.qos_enabled = enabled ? 1 : 0;
+                    dev.qos_max_upload_kbps = upKbps;
+                    dev.qos_max_download_kbps = downKbps;
+                    dev.qos_duration_minutes = durationMin;
+                }
                 closeQosModal();
-                fetchAllData();  // 刷新数据
+                fetchAllData();  // 异步刷新，确保与后端一致
             } else {
                 alert('保存失败: ' + (resp.data.message || '未知错误'));
             }
@@ -1067,28 +1074,33 @@
             <div class="modal-row" id="qosRowUp">
                 <label>最大上传</label>
                 <select id="qosModalUp">
-                    <option value="10">1.25 KB/s</option>
-                    <option value="2048">256 KB/s</option>
-                    <option value="4096">512 KB/s</option>
-                    <option value="8192">1 MB/s</option>
-                    <option value="32768">4 MB/s</option>
-                    <option value="65536">8 MB/s</option>
+                    <option value="10">0.01 Mbps</option>
+                    <option value="1000">1 Mbps</option>
+                    <option value="2000">2 Mbps</option>
+                    <option value="4000">4 Mbps</option>
+                    <option value="10000">10 Mbps</option>
+                    <option value="20000">20 Mbps</option>
+                    <option value="50000">50 Mbps</option>
+                    <option value="100000">100 Mbps</option>
                 </select>
             </div>
             <div class="modal-row" id="qosRowDown">
                 <label>最大下载</label>
                 <select id="qosModalDown">
-                    <option value="10">1.25 KB/s</option>
-                    <option value="2048">256 KB/s</option>
-                    <option value="4096">512 KB/s</option>
-                    <option value="8192">1 MB/s</option>
-                    <option value="32768">4 MB/s</option>
-                    <option value="65536">8 MB/s</option>
+                    <option value="10">0.01 Mbps</option>
+                    <option value="1000">1 Mbps</option>
+                    <option value="2000">2 Mbps</option>
+                    <option value="4000">4 Mbps</option>
+                    <option value="10000">10 Mbps</option>
+                    <option value="20000">20 Mbps</option>
+                    <option value="50000">50 Mbps</option>
+                    <option value="100000">100 Mbps</option>
                 </select>
             </div>
             <div class="modal-row" id="qosRowDuration">
                 <label>限速时长</label>
                 <select id="qosModalDuration">
+                    <option value="1">1分钟</option>
                     <option value="10">10分钟</option>
                     <option value="30">30分钟</option>
                     <option value="60">1小时</option>
