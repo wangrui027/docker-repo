@@ -195,6 +195,69 @@
             .duration-text { font-size: 0.7rem; padding: 2px 5px; }
         }
 
+        /* 限速信息列 */
+        .qos-link {
+            color: #4f46e5;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 0.8rem;
+            display: inline-block;
+        }
+        .qos-link:hover { text-decoration: underline; }
+        .qos-limited { line-height: 1.4; }
+
+        /* 弹窗遮罩 */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.4);
+            z-index: 10000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-overlay.show { display: flex; }
+        .modal-box {
+            background: #fff;
+            border-radius: 12px;
+            padding: 1rem;
+            width: 380px;
+            max-width: 90vw;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+        .modal-box h3 { margin: 0 0 1rem 0; font-size: 1.1rem; }
+        .modal-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 0.8rem;
+        }
+        .modal-row label { width: 70px; font-size: 0.85rem; }
+        .modal-row input[type="number"],
+        .modal-row select {
+            flex: 1;
+            padding: 6px 10px;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 0.85rem;
+        }
+        .modal-row { min-height: 36px; }
+        .modal-row input[type="checkbox"] { transform: scale(1.2); margin-right: 6px; }
+        .modal-btns {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 1.2rem;
+        }
+        .modal-btns button {
+            padding: 7px 18px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            border: none;
+        }
+        .btn-save { background: #4f46e5; color: #fff; }
+        .btn-cancel { background: #e5e7eb; color: #333; }
+
         /* 全屏加载遮罩 */
         .loading-overlay {
             position: fixed;
@@ -249,10 +312,11 @@
                     <th>下行流量</th>
                     <th>上传速率</th>
                     <th>下载速率</th>
+                    <th>限速</th>
                 </tr>
             </thead>
             <tbody id="deviceTableBody">
-                <tr><td colspan="8" style="text-align:center;padding:2rem 0;color:#64748b;">加载设备中...</td></tr>
+                <tr><td colspan="9" style="text-align:center;padding:2rem 0;color:#64748b;">加载设备中...</td></tr>
             </tbody>
         </table>
     </div>
@@ -305,6 +369,26 @@
         if (kbps === undefined || kbps === null) return '--';
         if (kbps < 1024) return kbps.toFixed(1) + ' KB/s';
         return (kbps/1024).toFixed(1) + ' MB/s';
+    }
+
+    // 限速信息显示（Kbps → KB/s 或 MB/s）
+    function formatQosLimit(kbps) {
+        if (!kbps || kbps === 0) return '0.00 KB/s';
+        const kbs = kbps / 8;  // Kbps → KB/s
+        if (kbs < 1024) return kbs.toFixed(2) + ' KB/s';
+        return (kbs / 1024).toFixed(2) + ' MB/s';
+    }
+
+    function renderQosCell(dev) {
+        if (!dev.qos_enabled || dev.qos_enabled === 0) {
+            return '<a class="qos-link" onclick="openQosModal(\'' + dev.mac + '\')">不限速</a>';
+        }
+        const up = formatQosLimit(dev.qos_max_upload_kbps);
+        const down = formatQosLimit(dev.qos_max_download_kbps);
+        return '<a class="qos-link qos-limited" onclick="openQosModal(\'' + dev.mac + '\')">'
+            + '<span class="qos-up">&#x21E7; ' + up + '</span><br>'
+            + '<span class="qos-down">&#x21E9; ' + down + '</span>'
+            + '</a>';
     }
 
     // 根据速率（KB/s）返回样式类 - 调整为512KB/s显示橙色
@@ -375,7 +459,7 @@
             const devices = resp.data.data || [];
             if (!devices.length) {
                 const tbody = document.getElementById('deviceTableBody');
-                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:2rem 0;color:#64748b;">暂无设备，请检查 PRESET_MATCH_LIST</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:2rem 0;color:#64748b;">暂无设备，请检查 PRESET_MATCH_LIST</td></tr>';
                 return;
             }
             allDevices = devices.map(d => ({
@@ -389,7 +473,10 @@
                 latest_upload_kbps: d.latest_upload_kbps,
                 latest_download_kbps: d.latest_download_kbps,
                 latest_bytes_send: d.latest_bytes_send || 0,
-                latest_bytes_recv: d.latest_bytes_received || 0
+                latest_bytes_recv: d.latest_bytes_received || 0,
+                qos_enabled: d.qos_enabled || 0,
+                qos_max_upload_kbps: d.qos_max_upload_kbps || 0,
+                qos_max_download_kbps: d.qos_max_download_kbps || 0
             }));
 
             // 更新基准时长数据
@@ -461,6 +548,7 @@
                 <td class="traffic-text ${downloadTrafficClass}">${recvFmt}</td>
                 <td class="${uploadClass}">${uploadSpeedFmt}</td>
                 <td class="${downloadClass}">${downloadSpeedFmt}</td>
+                <td>${renderQosCell(dev)}</td>
             `;
             tbody.appendChild(row);
         });
@@ -889,10 +977,111 @@
         startTickTimer();
         await startAutoRefresh();
     });
+
+    // ---------- QoS 限速弹窗 ----------
+    let qosModalMac = '';
+
+    function openQosModal(mac) {
+        qosModalMac = mac;
+        const dev = allDevices.find(d => d.mac === mac);
+        if (!dev) return;
+        document.getElementById('qosModalDevName').textContent = dev.devname;
+        document.getElementById('qosModalEnabled').checked = (dev.qos_enabled === 1);
+        // 直接设置 select 值（Kbps），匹配不到则清空
+        document.getElementById('qosModalUp').value = dev.qos_max_upload_kbps || '';
+        document.getElementById('qosModalDown').value = dev.qos_max_download_kbps || '';
+        // 根据复选框状态显示/隐藏速率行
+        toggleQosSpeedRows();
+        document.getElementById('qosModal').classList.add('show');
+    }
+
+    function toggleQosSpeedRows() {
+        const show = document.getElementById('qosModalEnabled').checked;
+        document.getElementById('qosRowUp').style.display = show ? 'flex' : 'none';
+        document.getElementById('qosRowDown').style.display = show ? 'flex' : 'none';
+    }
+
+    function closeQosModal() {
+        document.getElementById('qosModal').classList.remove('show');
+    }
+
+    async function saveQosLimit() {
+        const enabled = document.getElementById('qosModalEnabled').checked;
+        const upKbps = parseInt(document.getElementById('qosModalUp').value) || 0;
+        const downKbps = parseInt(document.getElementById('qosModalDown').value) || 0;
+        try {
+            const resp = await axios.post('/api/qos-limit', {
+                mac: qosModalMac,
+                enabled: enabled,
+                max_upload_kbps: upKbps,
+                max_download_kbps: downKbps
+            });
+            if (resp.data.status === 'ok') {
+                closeQosModal();
+                fetchAllData();  // 刷新数据
+            } else {
+                alert('保存失败: ' + (resp.data.message || '未知错误'));
+            }
+        } catch (err) {
+            console.error('QoS保存失败', err);
+            alert('保存失败，请检查网络连接');
+        }
+    }
+
+    // 弹窗事件绑定（DOM 加载完成后执行）
+    document.addEventListener('DOMContentLoaded', function() {
+        // 点击弹窗遮罩关闭
+        document.getElementById('qosModal').addEventListener('click', function(e) {
+            if (e.target === this) closeQosModal();
+        });
+    });
+    // 按 Esc 关闭弹窗（capture 阶段拦截，避免被 select 等组件吞掉）
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' || e.key === 'Esc' || e.keyCode === 27) {
+            closeQosModal();
+        }
+    }, true);
 </script>
     <div class="loading-overlay" id="loadingOverlay">
         <div class="loading-spinner"></div>
         <div class="loading-text">加载中...</div>
+    </div>
+
+    <!-- QoS 限速配置弹窗 -->
+    <div class="modal-overlay" id="qosModal">
+        <div class="modal-box">
+            <h3>⚙️ 限速配置 - <span id="qosModalDevName"></span></h3>
+            <div class="modal-row">
+                <label for="qosModalEnabled">上网限速</label>
+                <input type="checkbox" id="qosModalEnabled" onchange="toggleQosSpeedRows()">
+            </div>
+            <div class="modal-row" id="qosRowUp">
+                <label>最大上传</label>
+                <select id="qosModalUp">
+                    <option value="10">1.25 KB/s</option>
+                    <option value="2048">256 KB/s</option>
+                    <option value="4096">512 KB/s</option>
+                    <option value="8192">1 MB/s</option>
+                    <option value="32768">4 MB/s</option>
+                    <option value="65536">8 MB/s</option>
+                </select>
+            </div>
+            <div class="modal-row" id="qosRowDown">
+                <label>最大下载</label>
+                <select id="qosModalDown">
+                    <option value="10">1.25 KB/s</option>
+                    <option value="2048">256 KB/s</option>
+                    <option value="4096">512 KB/s</option>
+                    <option value="8192">1 MB/s</option>
+                    <option value="32768">4 MB/s</option>
+                    <option value="65536">8 MB/s</option>
+                </select>
+            </div>
+            <div class="modal-btns">
+                <button class="btn-cancel" onclick="closeQosModal()">取消</button>
+                <button class="btn-save" onclick="saveQosLimit()">保存</button>
+            </div>
+        </div>
     </div>
 </body>
 </html>

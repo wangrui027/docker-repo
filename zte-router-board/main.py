@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import pickle
 import sqlite3
@@ -23,18 +24,18 @@ SESSION_FILE = "router_self_session.pkl"
 # - 如果列表非空，则只保存列表中指定的字段名。
 # 下方列出了常用的关键字段，可根据实际需求增删。
 KEEP_FIELDS = [
-    "DevName",  # 设备名称（如“红米K40”）
-    "IPAddress",  # IPv4 地址
-    "MACAddress",  # MAC 地址
-    "ActiveTime",  # 最近一次活跃时间（设备有数据传输的时刻）
-    "InactiveTime",  # 进入非活跃状态的时间（设备断开或休眠的时刻）
-    "SNTPTime",  # 路由器当前网络时间（SNTP 同步时间）
-    "OnlineTimes",  # 设备累计上线次数（每次完整连接计为一次）
-    "BytesSend",  # 累计发送字节数（上行流量）
-    "BytesReceived",  # 累计接收字节数（下行流量）
-    "UsbandWidth",  # 上行带宽限制
-    "DsbandWidth",  # 下行带宽限制
-    "Active"  # 设备在线状态（1在线，0离线）
+    # "DevName",  # 设备名称（如“红米K40”）
+    # "IPAddress",  # IPv4 地址
+    # "MACAddress",  # MAC 地址
+    # "ActiveTime",  # 最近一次活跃时间（设备有数据传输的时刻）
+    # "InactiveTime",  # 进入非活跃状态的时间（设备断开或休眠的时刻）
+    # "SNTPTime",  # 路由器当前网络时间（SNTP 同步时间）
+    # "OnlineTimes",  # 设备累计上线次数（每次完整连接计为一次）
+    # "BytesSend",  # 累计发送字节数（上行流量）
+    # "BytesReceived",  # 累计接收字节数（下行流量）
+    # "UsbandWidth",  # 上行带宽限制
+    # "DsbandWidth",  # 下行带宽限制
+    # "Active"  # 设备在线状态（1在线，0离线）
 ]
 
 VALID_CACHE_SECONDS = 30  # 相同Cookie跳过验证的缓存时长（秒）
@@ -118,6 +119,13 @@ def init_db():
             conn.execute("ALTER TABLE device_info ADD COLUMN latest_bytes_received BIGINT DEFAULT 0")
         except sqlite3.OperationalError:
             pass  # 列已存在
+        # 添加 QoS 限速字段（兼容旧表）
+        try:
+            conn.execute("ALTER TABLE device_info ADD COLUMN qos_enabled INTEGER DEFAULT 0")
+            conn.execute("ALTER TABLE device_info ADD COLUMN qos_max_upload_kbps INTEGER DEFAULT 0")
+            conn.execute("ALTER TABLE device_info ADD COLUMN qos_max_download_kbps INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
         # 设备历史记录表
         conn.execute('''
             CREATE TABLE IF NOT EXISTS device_history (
@@ -187,6 +195,11 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
     ip = device_info.get("IPAddress", "")
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # QoS 限速信息（从 OBJ_QOS_BCRULE_ID 解析得到）
+    qos_enabled = int(device_info.get("qos_enabled", 0) or 0)
+    qos_max_up = int(device_info.get("qos_max_upload_kbps", 0) or 0)
+    qos_max_down = int(device_info.get("qos_max_download_kbps", 0) or 0)
+
     final_offline = None
     if active == 0:
         if offline_time_str and offline_time_str.strip():
@@ -226,12 +239,14 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
                 SET devname = ?, ipaddress = ?, last_seen = ?, active = ?,
                     sntp_time = ?, active_time = ?, offline_time = ?,
                     online_duration_sec = ?, offline_duration_sec = ?,
-                    latest_bytes_send = ?, latest_bytes_received = ?
+                    latest_bytes_send = ?, latest_bytes_received = ?,
+                    qos_enabled = ?, qos_max_upload_kbps = ?, qos_max_download_kbps = ?
                 WHERE macaddress = ?
             ''', (devname, ip, now_str, active,
                   sntp_time_str, final_active, final_offline,
                   online_dur, offline_dur,
-                  latest_send, latest_recv, mac))
+                  latest_send, latest_recv,
+                  qos_enabled, qos_max_up, qos_max_down, mac))
         else:
             conn.execute('''
                 INSERT INTO device_info (
@@ -239,12 +254,14 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
                     active, sntp_time, active_time, offline_time,
                     online_duration_sec, offline_duration_sec,
                     latest_upload_kbps, latest_download_kbps,
-                    latest_bytes_send, latest_bytes_received
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    latest_bytes_send, latest_bytes_received,
+                    qos_enabled, qos_max_upload_kbps, qos_max_download_kbps
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (devname, ip, mac, now_str, now_str,
                   active, sntp_time_str, final_active, final_offline,
                   online_dur, offline_dur, None, None,
-                  latest_send, latest_recv))
+                  latest_send, latest_recv,
+                  qos_enabled, qos_max_up, qos_max_down))
 
 
 def update_devices_offline(matched_macs):
@@ -532,7 +549,28 @@ def fetch_and_process():
         response = session.get(xml_url, timeout=10)
         xml_content = response.text
         root = ET.fromstring(xml_content)
-        instances = root.findall(".//Instance")
+
+        # 解析 QoS 限速规则（OBJ_QOS_BCRULE_ID），按 MAC 建立索引
+        qos_map = {}  # MAC → {"qos_enabled": 1, "qos_max_upload_kbps": ..., "qos_max_download_kbps": ...}
+        for qos_inst in root.findall(".//OBJ_QOS_BCRULE_ID/Instance"):
+            qos_data = {}
+            for pn, pv in zip(qos_inst.findall("ParaName"), qos_inst.findall("ParaValue")):
+                name = pn.text
+                value = pv.text if pv.text is not None else ""
+                qos_data[name] = value
+            mac = qos_data.get("MACDev", "")
+            if mac:
+                try:
+                    qos_map[mac] = {
+                        "qos_enabled": 1,
+                        "qos_max_upload_kbps": int(float(qos_data.get("BandwithRateMaxUp", 0))),
+                        "qos_max_download_kbps": int(float(qos_data.get("BandwithRateMaxDown", 0)))
+                    }
+                except (ValueError, TypeError):
+                    pass
+
+        # 解析设备列表（OBJ_LAN_INFO_ID）
+        instances = root.findall(".//OBJ_LAN_INFO_ID/Instance")
         matched_devices = []
         matched_macs = []
         for inst in instances:
@@ -550,6 +588,12 @@ def fetch_and_process():
             if dev_name in PRESET_MATCH_LIST or ip_addr in PRESET_MATCH_LIST or mac_addr in PRESET_MATCH_LIST:
                 matched = True
             if matched:
+                # 合并 QoS 限速信息
+                qos = qos_map.get(mac_addr, {"qos_enabled": 0, "qos_max_upload_kbps": 0, "qos_max_download_kbps": 0})
+                device_info["qos_enabled"] = qos["qos_enabled"]
+                device_info["qos_max_upload_kbps"] = qos["qos_max_upload_kbps"]
+                device_info["qos_max_download_kbps"] = qos["qos_max_download_kbps"]
+
                 if KEEP_FIELDS:
                     filtered_info = {field: device_info.get(field, "") for field in KEEP_FIELDS}
                     matched_devices.append(filtered_info)
@@ -557,6 +601,17 @@ def fetch_and_process():
                     matched_devices.append(device_info)
                 if mac_addr:
                     matched_macs.append(mac_addr)
+        # 保存原始 JSON 快照到 data/日期/ 目录
+        if matched_devices:
+            now = datetime.now()
+            date_dir = Path("data") / now.strftime("%Y-%m-%d")
+            date_dir.mkdir(parents=True, exist_ok=True)
+            filename = now.strftime("%Y-%m-%d_%H-%M-%S.json")
+            filepath = date_dir / filename
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(matched_devices, f, ensure_ascii=False, indent=2)
+            log_info(f"已保存快照: {filepath}（{len(matched_devices)} 台设备）")
+
         for device in matched_devices:
             insert_device_record(device)
         if matched_macs:
@@ -747,7 +802,8 @@ def query_device_info():
         "active", "sntp_time", "active_time", "offline_time",
         "online_duration_sec", "offline_duration_sec",
         "latest_upload_kbps", "latest_download_kbps",
-        "latest_bytes_send", "latest_bytes_received"
+        "latest_bytes_send", "latest_bytes_received",
+        "qos_enabled", "qos_max_upload_kbps", "qos_max_download_kbps"
     }
     if order_by not in allowed_fields:
         order_by = "last_seen"
@@ -778,7 +834,8 @@ def query_device_info():
                active, sntp_time, active_time, offline_time,
                online_duration_sec, offline_duration_sec,
                latest_upload_kbps, latest_download_kbps,
-               latest_bytes_send, latest_bytes_received
+               latest_bytes_send, latest_bytes_received,
+               qos_enabled, qos_max_upload_kbps, qos_max_download_kbps
         FROM device_info
         WHERE {where_sql}
         ORDER BY {order_by} {order_dir}
@@ -794,7 +851,8 @@ def query_device_info():
             "sntp_time": row[7], "active_time": row[8], "offline_time": row[9],
             "online_duration_sec": row[10], "offline_duration_sec": row[11],
             "latest_upload_kbps": row[12], "latest_download_kbps": row[13],
-            "latest_bytes_send": row[14], "latest_bytes_received": row[15]
+            "latest_bytes_send": row[14], "latest_bytes_received": row[15],
+            "qos_enabled": row[16], "qos_max_upload_kbps": row[17], "qos_max_download_kbps": row[18]
         })
     return jsonify({"total": total, "page": page, "page_size": page_size, "data": devices})
 
@@ -808,6 +866,24 @@ def delete_device_info(device_id):
                 return jsonify({"status": "error", "message": "Device not found"}), 404
             conn.execute("DELETE FROM device_info WHERE id = ?", (device_id,))
     return jsonify({"status": "ok", "message": f"Device info with id {device_id} deleted"})
+
+
+# ===== QoS 限速设置接口 =====
+@app.route('/api/qos-limit', methods=['POST'])
+def set_qos_limit():
+    """接收前端限速配置（MAC + 是否启用 + 上下行 Kbps），待实现路由器配置逻辑"""
+    data = request.get_json() or {}
+    mac = data.get('mac')
+    enabled = data.get('enabled', False)
+    max_upload_kbps = int(data.get('max_upload_kbps', 0) or 0)
+    max_download_kbps = int(data.get('max_download_kbps', 0) or 0)
+    client_ip = get_client_ip()
+    log_info(
+        f"[{client_ip}] QoS限速设置: MAC={mac}, enabled={enabled}, "
+        f"max_upload={max_upload_kbps}Kbps, max_download={max_download_kbps}Kbps"
+    )
+    # TODO: 调用路由器 API 设置 QoS 限速规则
+    return jsonify({"status": "ok", "message": "限速设置已接收，路由器配置功能待实现"})
 
 
 # ---------- 定时任务调度 ----------
