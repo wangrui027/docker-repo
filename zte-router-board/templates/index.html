@@ -997,8 +997,10 @@
 
     function toggleQosSpeedRows() {
         const show = document.getElementById('qosModalEnabled').checked;
-        document.getElementById('qosRowUp').style.display = show ? 'flex' : 'none';
-        document.getElementById('qosRowDown').style.display = show ? 'flex' : 'none';
+        const display = show ? 'flex' : 'none';
+        document.getElementById('qosRowUp').style.display = display;
+        document.getElementById('qosRowDown').style.display = display;
+        document.getElementById('qosRowDuration').style.display = display;
     }
 
     function closeQosModal() {
@@ -1009,12 +1011,14 @@
         const enabled = document.getElementById('qosModalEnabled').checked;
         const upKbps = parseInt(document.getElementById('qosModalUp').value) || 0;
         const downKbps = parseInt(document.getElementById('qosModalDown').value) || 0;
+        const durationMin = parseInt(document.getElementById('qosModalDuration').value) || 0;
         try {
             const resp = await axios.post('/api/qos-limit', {
                 mac: qosModalMac,
                 enabled: enabled,
                 max_upload_kbps: upKbps,
-                max_download_kbps: downKbps
+                max_download_kbps: downKbps,
+                duration_minutes: durationMin
             });
             if (resp.data.status === 'ok') {
                 closeQosModal();
@@ -1075,6 +1079,21 @@
                     <option value="8192">1 MB/s</option>
                     <option value="32768">4 MB/s</option>
                     <option value="65536">8 MB/s</option>
+                </select>
+            </div>
+            <div class="modal-row" id="qosRowDuration">
+                <label>限速时长</label>
+                <select id="qosModalDuration">
+                    <option value="10">10分钟</option>
+                    <option value="30">30分钟</option>
+                    <option value="60">1小时</option>
+                    <option value="120">2小时</option>
+                    <option value="300">5小时</option>
+                    <option value="720">12小时</option>
+                    <option value="1440">1天</option>
+                    <option value="2880">2天</option>
+                    <option value="10080">一周</option>
+                    <option value="0">永久</option>
                 </select>
             </div>
             <div class="modal-btns">

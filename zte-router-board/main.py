@@ -601,16 +601,16 @@ def fetch_and_process():
                     matched_devices.append(device_info)
                 if mac_addr:
                     matched_macs.append(mac_addr)
-        # 保存原始 JSON 快照到 data/日期/ 目录
-        if matched_devices:
-            now = datetime.now()
-            date_dir = Path("data") / now.strftime("%Y-%m-%d")
-            date_dir.mkdir(parents=True, exist_ok=True)
-            filename = now.strftime("%Y-%m-%d_%H-%M-%S.json")
-            filepath = date_dir / filename
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(matched_devices, f, ensure_ascii=False, indent=2)
-            log_info(f"已保存快照: {filepath}（{len(matched_devices)} 台设备）")
+        # # 保存原始 JSON 快照到 data/日期/ 目录
+        # if matched_devices:
+        #     now = datetime.now()
+        #     date_dir = Path("data") / now.strftime("%Y-%m-%d")
+        #     date_dir.mkdir(parents=True, exist_ok=True)
+        #     filename = now.strftime("%Y-%m-%d_%H-%M-%S.json")
+        #     filepath = date_dir / filename
+        #     with open(filepath, "w", encoding="utf-8") as f:
+        #         json.dump(matched_devices, f, ensure_ascii=False, indent=2)
+        #     log_info(f"已保存快照: {filepath}（{len(matched_devices)} 台设备）")
 
         for device in matched_devices:
             insert_device_record(device)
@@ -871,16 +871,18 @@ def delete_device_info(device_id):
 # ===== QoS 限速设置接口 =====
 @app.route('/api/qos-limit', methods=['POST'])
 def set_qos_limit():
-    """接收前端限速配置（MAC + 是否启用 + 上下行 Kbps），待实现路由器配置逻辑"""
+    """接收前端限速配置（MAC + 是否启用 + 上下行 Kbps + 时长分钟），待实现路由器配置逻辑"""
     data = request.get_json() or {}
     mac = data.get('mac')
     enabled = data.get('enabled', False)
     max_upload_kbps = int(data.get('max_upload_kbps', 0) or 0)
     max_download_kbps = int(data.get('max_download_kbps', 0) or 0)
+    duration_minutes = int(data.get('duration_minutes', 0) or 0)
     client_ip = get_client_ip()
     log_info(
         f"[{client_ip}] QoS限速设置: MAC={mac}, enabled={enabled}, "
-        f"max_upload={max_upload_kbps}Kbps, max_download={max_download_kbps}Kbps"
+        f"max_upload={max_upload_kbps}Kbps, max_download={max_download_kbps}Kbps, "
+        f"duration={duration_minutes}min"
     )
     # TODO: 调用路由器 API 设置 QoS 限速规则
     return jsonify({"status": "ok", "message": "限速设置已接收，路由器配置功能待实现"})
