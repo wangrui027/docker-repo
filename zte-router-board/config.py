@@ -4,7 +4,7 @@ import os
 # ========== 路由器连接配置 ==========
 ROUTER_BASE = "http://zte.home"
 # 优先从环境变量取密码，否则使用硬编码（建议设置环境变量）
-PASSWORD = "8U36d6YzJ#8xi3!m"
+PASSWORD = "U9wH$A9PY374s@CA"
 
 # ========== 设备匹配列表 ==========
 PRESET_MATCH_LIST = [

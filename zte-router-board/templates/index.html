@@ -205,6 +205,7 @@
         }
         .qos-link:hover { text-decoration: underline; }
         .qos-limited { line-height: 1.4; }
+        .qos-normal { line-height: 2.8; display: inline-block; }
 
         /* 弹窗遮罩 */
         .modal-overlay {
@@ -381,7 +382,7 @@
 
     function renderQosCell(dev) {
         if (!dev.qos_enabled || dev.qos_enabled === 0) {
-            return '<a class="qos-link" onclick="openQosModal(\'' + dev.mac + '\')">不限速</a>';
+            return '<a class="qos-link qos-normal" onclick="openQosModal(\'' + dev.mac + '\')">不限速</a>';
         }
         const up = formatQosLimit(dev.qos_max_upload_kbps);
         const down = formatQosLimit(dev.qos_max_download_kbps);
