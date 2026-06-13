@@ -313,11 +313,12 @@
                     <th>下行流量</th>
                     <th>上传速率</th>
                     <th>下载速率</th>
-                    <th>限速</th>
+                    <th>限速策略</th>
+                    <th>限速剩余</th>
                 </tr>
             </thead>
             <tbody id="deviceTableBody">
-                <tr><td colspan="9" style="text-align:center;padding:2rem 0;color:#64748b;">加载设备中...</td></tr>
+                <tr><td colspan="10" style="text-align:center;padding:2rem 0;color:#64748b;">加载设备中...</td></tr>
             </tbody>
         </table>
     </div>
@@ -350,6 +351,7 @@
     let refreshTimer = null;
     let tickTimer = null;
     let deviceBaseData = new Map();
+    let qosTimerData = new Map();  // QoS 限速剩余时间实时计时
 
     const STORAGE_KEY = 'selected_macs_for_speed_chart';
     const TIME_RANGE_KEY = 'selected_time_range_minutes';
@@ -431,7 +433,57 @@
         } else if (totalSec < 86400) {
             return hours + '小时' + mins + '分';
         } else {
-            return days + '天' + hours + '小时';
+            return days + '天' + hours + '时';
+        }
+    }
+
+    // QoS 剩余限速时间显示（基于浏览器时钟实时计算）
+    function formatRemainSec(remainSec) {
+        if (remainSec <= 0) return '已到期';
+        const days = Math.floor(remainSec / 86400);
+        const hours = Math.floor((remainSec % 86400) / 3600);
+        const mins = Math.floor((remainSec % 3600) / 60);
+        const secs = remainSec % 60;
+        if (remainSec < 60) {
+            return secs + '秒';
+        } else if (remainSec < 3600) {
+            return mins + '分' + secs + '秒';
+        } else if (remainSec < 86400) {
+            return hours + '时' + mins + '分';
+        } else {
+            return days + '天' + hours + '时';
+        }
+    }
+
+    function getQosRemaining(mac) {
+        const data = qosTimerData.get(mac);
+        if (!data) return null;
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - data.limitTimeMs) / 1000));
+        const remainSec = Math.min(data.durationSec, data.durationSec - elapsedSec);
+        return formatRemainSec(remainSec);
+    }
+
+    // QoS 剩余限速时间（首次渲染用）
+    function computeQosRemaining(dev) {
+        if (!dev.qos_enabled || dev.qos_enabled === 0) return '--';
+        if (!dev.qos_duration_minutes || dev.qos_duration_minutes === 0) return '永久';
+        if (!dev.qos_limit_time) return '--';
+        const limitMs = new Date(dev.qos_limit_time.replace(' ', 'T') + '+08:00').getTime();
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - limitMs) / 1000));
+        const durationSec = dev.qos_duration_minutes * 60;
+        const remainSec = Math.min(durationSec, durationSec - elapsedSec);
+        if (remainSec <= 0) return '已到期';
+        return formatRemainSec(remainSec);
+    }
+
+    function updateQosRemaining(mac) {
+        const row = document.querySelector(`tr[data-mac="${mac}"]`);
+        if (!row) return;
+        const cell = row.querySelector('.qos-remain-cell');
+        if (!cell) return;
+        const text = getQosRemaining(mac);
+        if (text !== null) {
+            cell.innerHTML = '<span class="duration-text">' + text + '</span>';
         }
     }
 
@@ -451,6 +503,9 @@
         for (let mac of deviceBaseData.keys()) {
             updateTableDuration(mac);
         }
+        for (let mac of qosTimerData.keys()) {
+            updateQosRemaining(mac);
+        }
     }
 
     async function fetchAllData() {
@@ -459,7 +514,7 @@
             const devices = resp.data.data || [];
             if (!devices.length) {
                 const tbody = document.getElementById('deviceTableBody');
-                tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:2rem 0;color:#64748b;">暂无设备，请检查 PRESET_MATCH_LIST</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:2rem 0;color:#64748b;">暂无设备，请检查 PRESET_MATCH_LIST</td></tr>';
                 return;
             }
             allDevices = devices.map(d => ({
@@ -477,7 +532,8 @@
                 qos_enabled: d.qos_enabled || 0,
                 qos_max_upload_kbps: d.qos_max_upload_kbps || 0,
                 qos_max_download_kbps: d.qos_max_download_kbps || 0,
-                qos_duration_minutes: d.qos_duration_minutes || 0
+                qos_duration_minutes: d.qos_duration_minutes || 0,
+                qos_limit_time: d.qos_limit_time || ''
             }));
 
             // 更新基准时长数据
@@ -500,6 +556,19 @@
                             isOnline: dev.active
                         });
                     }
+                }
+            }
+
+            // 更新 QoS 限速剩余计时数据
+            for (let dev of allDevices) {
+                if (dev.qos_enabled && dev.qos_limit_time && dev.qos_duration_minutes > 0) {
+                    const limitMs = new Date(dev.qos_limit_time.replace(' ', 'T') + '+08:00').getTime();
+                    qosTimerData.set(dev.mac, {
+                        limitTimeMs: limitMs,
+                        durationSec: dev.qos_duration_minutes * 60
+                    });
+                } else {
+                    qosTimerData.delete(dev.mac);
                 }
             }
 
@@ -550,6 +619,7 @@
                 <td class="${uploadClass}">${uploadSpeedFmt}</td>
                 <td class="${downloadClass}">${downloadSpeedFmt}</td>
                 <td>${renderQosCell(dev)}</td>
+                <td class="qos-remain-cell"><span class="duration-text">${computeQosRemaining(dev)}</span></td>
             `;
             tbody.appendChild(row);
         });
@@ -991,9 +1061,12 @@
         // 直接设置 select 值（Kbps），匹配不到则清空
         document.getElementById('qosModalUp').value = dev.qos_max_upload_kbps || '';
         document.getElementById('qosModalDown').value = dev.qos_max_download_kbps || '';
-        // 恢复限速时长
-        const dur = dev.qos_duration_minutes || 0;
-        document.getElementById('qosModalDuration').value = dur;
+        // 恢复限速时长（已有限速才回填，否则保持"请选择"）
+        if (dev.qos_enabled === 1 && dev.qos_duration_minutes !== undefined) {
+            document.getElementById('qosModalDuration').value = dev.qos_duration_minutes;
+        } else {
+            document.getElementById('qosModalDuration').value = '';
+        }
         // 根据复选框状态显示/隐藏速率行
         toggleQosSpeedRows();
         document.getElementById('qosModal').classList.add('show');
@@ -1016,6 +1089,19 @@
         const upKbps = parseInt(document.getElementById('qosModalUp').value) || 0;
         const downKbps = parseInt(document.getElementById('qosModalDown').value) || 0;
         const durationMin = parseInt(document.getElementById('qosModalDuration').value) || 0;
+
+        if (enabled) {
+            if (!document.getElementById('qosModalUp').value) {
+                alert('请选择最大上传速度'); return;
+            }
+            if (!document.getElementById('qosModalDown').value) {
+                alert('请选择最大下载速度'); return;
+            }
+            if (document.getElementById('qosModalDuration').value === '') {
+                alert('请选择限速时长'); return;
+            }
+        }
+
         try {
             const resp = await axios.post('/api/qos-limit', {
                 mac: qosModalMac,
@@ -1032,6 +1118,7 @@
                     dev.qos_max_upload_kbps = upKbps;
                     dev.qos_max_download_kbps = downKbps;
                     dev.qos_duration_minutes = durationMin;
+                    dev.qos_limit_time = dev.sntp_time || '';
                 }
                 closeQosModal();
                 fetchAllData();  // 异步刷新，确保与后端一致
@@ -1074,6 +1161,7 @@
             <div class="modal-row" id="qosRowUp">
                 <label>最大上传</label>
                 <select id="qosModalUp">
+                    <option value="">请选择</option>
                     <option value="10">0.01 Mbps</option>
                     <option value="1000">1 Mbps</option>
                     <option value="2000">2 Mbps</option>
@@ -1087,6 +1175,7 @@
             <div class="modal-row" id="qosRowDown">
                 <label>最大下载</label>
                 <select id="qosModalDown">
+                    <option value="">请选择</option>
                     <option value="10">0.01 Mbps</option>
                     <option value="1000">1 Mbps</option>
                     <option value="2000">2 Mbps</option>
@@ -1100,6 +1189,7 @@
             <div class="modal-row" id="qosRowDuration">
                 <label>限速时长</label>
                 <select id="qosModalDuration">
+                    <option value="">请选择</option>
                     <option value="1">1分钟</option>
                     <option value="10">10分钟</option>
                     <option value="30">30分钟</option>
