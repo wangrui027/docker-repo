@@ -477,7 +477,8 @@
                 latest_bytes_recv: d.latest_bytes_received || 0,
                 qos_enabled: d.qos_enabled || 0,
                 qos_max_upload_kbps: d.qos_max_upload_kbps || 0,
-                qos_max_download_kbps: d.qos_max_download_kbps || 0
+                qos_max_download_kbps: d.qos_max_download_kbps || 0,
+                qos_duration_minutes: d.qos_duration_minutes || 0
             }));
 
             // 更新基准时长数据
@@ -991,6 +992,9 @@
         // 直接设置 select 值（Kbps），匹配不到则清空
         document.getElementById('qosModalUp').value = dev.qos_max_upload_kbps || '';
         document.getElementById('qosModalDown').value = dev.qos_max_download_kbps || '';
+        // 恢复限速时长
+        const dur = dev.qos_duration_minutes || 0;
+        document.getElementById('qosModalDuration').value = dur;
         // 根据复选框状态显示/隐藏速率行
         toggleQosSpeedRows();
         document.getElementById('qosModal').classList.add('show');

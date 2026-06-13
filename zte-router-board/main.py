@@ -124,6 +124,9 @@ def init_db():
             conn.execute("ALTER TABLE device_info ADD COLUMN qos_enabled INTEGER DEFAULT 0")
             conn.execute("ALTER TABLE device_info ADD COLUMN qos_max_upload_kbps INTEGER DEFAULT 0")
             conn.execute("ALTER TABLE device_info ADD COLUMN qos_max_download_kbps INTEGER DEFAULT 0")
+            conn.execute("ALTER TABLE device_info ADD COLUMN qos_inst_id TEXT")
+            conn.execute("ALTER TABLE device_info ADD COLUMN qos_limit_time TEXT")
+            conn.execute("ALTER TABLE device_info ADD COLUMN qos_duration_minutes INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass  # 列已存在
         # 设备历史记录表
@@ -199,6 +202,9 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
     qos_enabled = int(device_info.get("qos_enabled", 0) or 0)
     qos_max_up = int(device_info.get("qos_max_upload_kbps", 0) or 0)
     qos_max_down = int(device_info.get("qos_max_download_kbps", 0) or 0)
+    qos_inst_id = device_info.get("qos_inst_id") or None
+    qos_limit_time = device_info.get("qos_limit_time") or None
+    qos_duration_minutes = int(device_info.get("qos_duration_minutes", 0) or 0)
 
     final_offline = None
     if active == 0:
@@ -233,6 +239,16 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
     with sqlite3.connect(DB_FILE) as conn:
         cur = conn.execute("SELECT id FROM device_info WHERE macaddress = ?", (mac,))
         exists = cur.fetchone()
+        # 如果是 UPDATE 且设备有限速，但本次未传 qos_limit_time / qos_duration_minutes，
+        # 则保留数据库已有值（fetch_and_process 采集时不覆盖这两个字段）
+        if exists and qos_enabled == 1 and not qos_limit_time and qos_duration_minutes == 0:
+            cur = conn.execute(
+                "SELECT qos_limit_time, qos_duration_minutes FROM device_info WHERE macaddress = ?",
+                (mac,))
+            row = cur.fetchone()
+            if row:
+                qos_limit_time = row[0] or qos_limit_time
+                qos_duration_minutes = row[1] if row[1] else qos_duration_minutes
         if exists:
             conn.execute('''
                 UPDATE device_info
@@ -240,13 +256,15 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
                     sntp_time = ?, active_time = ?, offline_time = ?,
                     online_duration_sec = ?, offline_duration_sec = ?,
                     latest_bytes_send = ?, latest_bytes_received = ?,
-                    qos_enabled = ?, qos_max_upload_kbps = ?, qos_max_download_kbps = ?
+                    qos_enabled = ?, qos_max_upload_kbps = ?, qos_max_download_kbps = ?,
+                    qos_inst_id = ?, qos_limit_time = ?, qos_duration_minutes = ?
                 WHERE macaddress = ?
             ''', (devname, ip, now_str, active,
                   sntp_time_str, final_active, final_offline,
                   online_dur, offline_dur,
                   latest_send, latest_recv,
-                  qos_enabled, qos_max_up, qos_max_down, mac))
+                  qos_enabled, qos_max_up, qos_max_down,
+                  qos_inst_id, qos_limit_time, qos_duration_minutes, mac))
         else:
             conn.execute('''
                 INSERT INTO device_info (
@@ -255,13 +273,15 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
                     online_duration_sec, offline_duration_sec,
                     latest_upload_kbps, latest_download_kbps,
                     latest_bytes_send, latest_bytes_received,
-                    qos_enabled, qos_max_upload_kbps, qos_max_download_kbps
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    qos_enabled, qos_max_upload_kbps, qos_max_download_kbps,
+                    qos_inst_id, qos_limit_time, qos_duration_minutes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (devname, ip, mac, now_str, now_str,
                   active, sntp_time_str, final_active, final_offline,
                   online_dur, offline_dur, None, None,
                   latest_send, latest_recv,
-                  qos_enabled, qos_max_up, qos_max_down))
+                  qos_enabled, qos_max_up, qos_max_down,
+                  qos_inst_id, qos_limit_time, qos_duration_minutes))
 
 
 def update_devices_offline(matched_macs):
@@ -563,6 +583,7 @@ def fetch_and_process():
                 try:
                     qos_map[mac] = {
                         "qos_enabled": 1,
+                        "qos_inst_id": qos_data.get("_InstID", ""),
                         "qos_max_upload_kbps": int(float(qos_data.get("BandwithRateMaxUp", 0))),
                         "qos_max_download_kbps": int(float(qos_data.get("BandwithRateMaxDown", 0)))
                     }
@@ -589,10 +610,21 @@ def fetch_and_process():
                 matched = True
             if matched:
                 # 合并 QoS 限速信息
-                qos = qos_map.get(mac_addr, {"qos_enabled": 0, "qos_max_upload_kbps": 0, "qos_max_download_kbps": 0})
-                device_info["qos_enabled"] = qos["qos_enabled"]
-                device_info["qos_max_upload_kbps"] = qos["qos_max_upload_kbps"]
-                device_info["qos_max_download_kbps"] = qos["qos_max_download_kbps"]
+                if mac_addr in qos_map:
+                    qos = qos_map[mac_addr]
+                    device_info["qos_enabled"] = 1
+                    device_info["qos_inst_id"] = qos["qos_inst_id"]
+                    device_info["qos_max_upload_kbps"] = qos["qos_max_upload_kbps"]
+                    device_info["qos_max_download_kbps"] = qos["qos_max_download_kbps"]
+                    # qos_limit_time / qos_duration_minutes 不设置 → upsert 保留已有值
+                else:
+                    # 未匹配到限速规则 → 全部重置
+                    device_info["qos_enabled"] = 0
+                    device_info["qos_inst_id"] = None
+                    device_info["qos_max_upload_kbps"] = 0
+                    device_info["qos_max_download_kbps"] = 0
+                    device_info["qos_limit_time"] = None
+                    device_info["qos_duration_minutes"] = 0
 
                 if KEEP_FIELDS:
                     filtered_info = {field: device_info.get(field, "") for field in KEEP_FIELDS}
@@ -601,6 +633,56 @@ def fetch_and_process():
                     matched_devices.append(device_info)
                 if mac_addr:
                     matched_macs.append(mac_addr)
+
+        # ===== 自动解除过期 QoS 限速 =====
+        with sqlite3.connect(DB_FILE) as conn:
+            expired = conn.execute(
+                "SELECT macaddress, qos_inst_id, qos_limit_time, qos_duration_minutes "
+                "FROM device_info WHERE qos_enabled = 1 AND qos_duration_minutes > 0"
+            ).fetchall()
+        if expired:
+            # 构建 MAC → SNTPTime 映射（从当前 XML 所有实例中提取）
+            sntp_map = {}
+            for inst in root.findall(".//OBJ_LAN_INFO_ID/Instance"):
+                mac = None
+                sntp = None
+                for pn, pv in zip(inst.findall("ParaName"), inst.findall("ParaValue")):
+                    if pn.text == "MACAddress":
+                        mac = pv.text
+                    elif pn.text == "SNTPTime":
+                        sntp = normalize_sntp_time(pv.text if pv.text else "")
+                if mac and sntp:
+                    sntp_map[mac] = sntp
+
+            for mac, qos_inst_id, limit_time_str, dur_min in expired:
+                if not limit_time_str or mac not in sntp_map:
+                    continue
+                try:
+                    limit_dt = parse_time_to_datetime(limit_time_str)
+                    current_dt = parse_time_to_datetime(sntp_map[mac])
+                    if limit_dt and current_dt:
+                        expire_dt = limit_dt + timedelta(minutes=dur_min)
+                        if current_dt >= expire_dt:
+                            log_info(f"QoS限速已过期，自动解除: MAC={mac}, instID={qos_inst_id}, duration={dur_min}min")
+                            try:
+                                token = get_session_token(session)
+                                form_data = {
+                                    "IF_ACTION": "Delete",
+                                    "_InstID": qos_inst_id,
+                                    "_sessionTOKEN": token
+                                }
+                                qos_api_post(session, form_data)
+                            except Exception as e:
+                                log_warning(f"QoS自动解除API调用失败: {mac}, {e}")
+                            with db_lock:
+                                with sqlite3.connect(DB_FILE) as conn2:
+                                    conn2.execute(
+                                        "UPDATE device_info SET qos_enabled=0, qos_inst_id=NULL, "
+                                        "qos_limit_time=NULL, qos_duration_minutes=0 WHERE macaddress=?",
+                                        (mac,))
+                except Exception as e:
+                    log_warning(f"QoS过期检查异常: {mac}, {e}")
+
         # # 保存原始 JSON 快照到 data/日期/ 目录
         # if matched_devices:
         #     now = datetime.now()
@@ -803,7 +885,8 @@ def query_device_info():
         "online_duration_sec", "offline_duration_sec",
         "latest_upload_kbps", "latest_download_kbps",
         "latest_bytes_send", "latest_bytes_received",
-        "qos_enabled", "qos_max_upload_kbps", "qos_max_download_kbps"
+        "qos_enabled", "qos_max_upload_kbps", "qos_max_download_kbps",
+        "qos_inst_id", "qos_limit_time", "qos_duration_minutes"
     }
     if order_by not in allowed_fields:
         order_by = "last_seen"
@@ -835,7 +918,8 @@ def query_device_info():
                online_duration_sec, offline_duration_sec,
                latest_upload_kbps, latest_download_kbps,
                latest_bytes_send, latest_bytes_received,
-               qos_enabled, qos_max_upload_kbps, qos_max_download_kbps
+               qos_enabled, qos_max_upload_kbps, qos_max_download_kbps,
+               qos_inst_id, qos_limit_time, qos_duration_minutes
         FROM device_info
         WHERE {where_sql}
         ORDER BY {order_by} {order_dir}
@@ -852,7 +936,8 @@ def query_device_info():
             "online_duration_sec": row[10], "offline_duration_sec": row[11],
             "latest_upload_kbps": row[12], "latest_download_kbps": row[13],
             "latest_bytes_send": row[14], "latest_bytes_received": row[15],
-            "qos_enabled": row[16], "qos_max_upload_kbps": row[17], "qos_max_download_kbps": row[18]
+            "qos_enabled": row[16], "qos_max_upload_kbps": row[17], "qos_max_download_kbps": row[18],
+            "qos_inst_id": row[19], "qos_limit_time": row[20], "qos_duration_minutes": row[21]
         })
     return jsonify({"total": total, "page": page, "page_size": page_size, "data": devices})
 
@@ -868,10 +953,52 @@ def delete_device_info(device_id):
     return jsonify({"status": "ok", "message": f"Device info with id {device_id} deleted"})
 
 
+# ===== QoS API 辅助函数 =====
+QOS_API_URL = f"{ROUTER_BASE}/?_type=vueData&_tag=localnet_qosdyn_bandwithrule_lua"
+
+
+def get_session_token(session):
+    """从已有 session 获取 _sessionTOKEN，失败抛出异常"""
+    resp = session.get(f"{ROUTER_BASE}/?_type=loginsceneData&_tag=login_token_json", timeout=10)
+    if resp.status_code != 200:
+        raise Exception(f"获取 _sessionTOKEN 失败，HTTP {resp.status_code}")
+    data = resp.json()
+    token = data.get("_sessionToken", "")
+    if not token:
+        raise Exception("_sessionTOKEN 为空")
+    return token
+
+
+def qos_api_post(session, form_data):
+    """POST 调用 QoS 限速 API，返回响应文本"""
+    resp = session.post(QOS_API_URL, data=form_data, timeout=10)
+    if resp.status_code != 200:
+        raise Exception(f"QoS API POST 失败，HTTP {resp.status_code}")
+    return resp.text
+
+
+def qos_api_get_inst_ids(session):
+    """GET 调用 QoS API，解析返回 XML，返回 {MAC: _InstID} 映射"""
+    resp = session.get(QOS_API_URL, timeout=10)
+    if resp.status_code != 200:
+        raise Exception(f"QoS API GET 失败，HTTP {resp.status_code}")
+    root = ET.fromstring(resp.text)
+    result = {}
+    for inst in root.findall(".//OBJ_QOS_BCRULE_ID/Instance"):
+        qos_data = {}
+        for pn, pv in zip(inst.findall("ParaName"), inst.findall("ParaValue")):
+            qos_data[pn.text] = pv.text if pv.text is not None else ""
+        mac = qos_data.get("MACDev", "")
+        inst_id = qos_data.get("_InstID", "")
+        if mac and inst_id:
+            result[mac] = inst_id
+    return result
+
+
 # ===== QoS 限速设置接口 =====
 @app.route('/api/qos-limit', methods=['POST'])
 def set_qos_limit():
-    """接收前端限速配置（MAC + 是否启用 + 上下行 Kbps + 时长分钟），待实现路由器配置逻辑"""
+    """前端限速配置 → 真实调用路由器 QoS API"""
     data = request.get_json() or {}
     mac = data.get('mac')
     enabled = data.get('enabled', False)
@@ -879,13 +1006,119 @@ def set_qos_limit():
     max_download_kbps = int(data.get('max_download_kbps', 0) or 0)
     duration_minutes = int(data.get('duration_minutes', 0) or 0)
     client_ip = get_client_ip()
-    log_info(
-        f"[{client_ip}] QoS限速设置: MAC={mac}, enabled={enabled}, "
-        f"max_upload={max_upload_kbps}Kbps, max_download={max_download_kbps}Kbps, "
-        f"duration={duration_minutes}min"
-    )
-    # TODO: 调用路由器 API 设置 QoS 限速规则
-    return jsonify({"status": "ok", "message": "限速设置已接收，路由器配置功能待实现"})
+
+    if not mac:
+        return jsonify({"status": "error", "message": "MAC 地址不能为空"}), 400
+
+    try:
+        session, _ = get_effective_cookie_and_session()
+        session_token = get_session_token(session)
+
+        if enabled:
+            # ======== 开启 / 修改限速 ========
+            # 查询设备已有 _InstID
+            with sqlite3.connect(DB_FILE) as conn:
+                cur = conn.execute(
+                    "SELECT qos_inst_id FROM device_info WHERE macaddress = ?", (mac,))
+                row = cur.fetchone()
+                existing_inst_id = row[0] if row and row[0] else None
+
+            inst_id = existing_inst_id if existing_inst_id else "-1"
+            form_data = {
+                "MACDev": mac,
+                "BandwithRateMaxDown": str(max_download_kbps),
+                "BandwithRateMaxUp": str(max_upload_kbps),
+                "UserName": mac,
+                "IF_ACTION": "Apply",
+                "_InstID": inst_id,
+                "_sessionTOKEN": session_token
+            }
+            post_resp_text = qos_api_post(session, form_data)
+
+            # 从 POST 响应直接解析 _InstID（初次设置时为 IGD.QoSBandwidthRuleN）
+            real_inst_id = existing_inst_id
+            try:
+                post_root = ET.fromstring(post_resp_text)
+                inst_id_el = post_root.find("_InstID")
+                if inst_id_el is not None and inst_id_el.text:
+                    real_inst_id = inst_id_el.text
+                else:
+                    # 兼容旧格式：尝试从 OBJ_QOS_BCRULE_ID 中查找
+                    inst_map = qos_api_get_inst_ids(session)
+                    real_inst_id = inst_map.get(mac, existing_inst_id)
+            except Exception:
+                real_inst_id = existing_inst_id
+
+            log_info(f"[{client_ip}] QoS Apply: MAC={mac}, up={max_upload_kbps}Kbps, down={max_download_kbps}Kbps, instID={real_inst_id}")
+
+            # 获取设备当前 SNTPTime 作为限速时刻
+            timestamp = int(time.time() * 1000)
+            lan_resp = session.get(
+                f"{ROUTER_BASE}/?_type=vueData&_tag=localnet_lan_info_lua&_={timestamp}",
+                timeout=10)
+            limit_time = None
+            if lan_resp.status_code == 200:
+                lan_root = ET.fromstring(lan_resp.text)
+                for inst in lan_root.findall(".//OBJ_LAN_INFO_ID/Instance"):
+                    dev_info = {}
+                    for pn, pv in zip(inst.findall("ParaName"), inst.findall("ParaValue")):
+                        dev_info[pn.text] = pv.text if pv.text is not None else ""
+                    if dev_info.get("MACAddress") == mac:
+                        limit_time = normalize_sntp_time(dev_info.get("SNTPTime", ""))
+                        break
+
+            # 更新数据库
+            with db_lock:
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.execute('''
+                        UPDATE device_info
+                        SET qos_enabled = 1,
+                            qos_max_upload_kbps = ?, qos_max_download_kbps = ?,
+                            qos_inst_id = ?, qos_limit_time = ?, qos_duration_minutes = ?
+                        WHERE macaddress = ?
+                    ''', (max_upload_kbps, max_download_kbps,
+                          real_inst_id, limit_time, duration_minutes, mac))
+
+            log_info(
+                f"[{client_ip}] QoS限速已生效: MAC={mac}, instID={real_inst_id}, "
+                f"limit_time={limit_time}, duration={duration_minutes}min"
+            )
+            return jsonify({"status": "ok", "message": "限速设置成功"})
+
+        else:
+            # ======== 关闭限速 ========
+            with sqlite3.connect(DB_FILE) as conn:
+                cur = conn.execute(
+                    "SELECT qos_inst_id FROM device_info WHERE macaddress = ?", (mac,))
+                row = cur.fetchone()
+                qos_inst_id = row[0] if row and row[0] else None
+
+            if qos_inst_id:
+                form_data = {
+                    "IF_ACTION": "Delete",
+                    "_InstID": qos_inst_id,
+                    "_sessionTOKEN": session_token
+                }
+                qos_api_post(session, form_data)
+                log_info(f"[{client_ip}] QoS Delete: MAC={mac}, instID={qos_inst_id}")
+
+            # 清除数据库 QoS 相关字段
+            with db_lock:
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.execute('''
+                        UPDATE device_info
+                        SET qos_enabled = 0,
+                            qos_inst_id = NULL, qos_limit_time = NULL,
+                            qos_duration_minutes = 0
+                        WHERE macaddress = ?
+                    ''', (mac,))
+
+            log_info(f"[{client_ip}] QoS限速已解除: MAC={mac}")
+            return jsonify({"status": "ok", "message": "限速已解除"})
+
+    except Exception as e:
+        log_warning(f"[{client_ip}] QoS限速设置失败: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 # ---------- 定时任务调度 ----------
