@@ -45,6 +45,7 @@ LOG_LEVEL = "INFO"  # "INFO" 或 "WARNING"
 DB_FILE = "data/data.db"
 db_lock = threading.Lock()  # 数据库写入锁
 qos_deleting_set = set()  # 正在解除限速的设备 MAC 集合（内存标记）
+qos_delete_retry = {}  # MAC → 采集次数，超过阈值自动放弃
 
 # =====================
 
@@ -618,9 +619,19 @@ def fetch_and_process():
                     device_info["qos_max_download_kbps"] = 0
                     device_info["qos_limit_time"] = None
                     device_info["qos_duration_minutes"] = 0
-                    # XML 中已无此限速规则 → 路由器已同步，清除标记
                     if mac_addr not in qos_map:
+                        # 路由器已同步，清除标记
                         qos_deleting_set.discard(mac_addr)
+                        qos_delete_retry.pop(mac_addr, None)
+                    else:
+                        # 路由器尚未同步，累计重试次数
+                        retry = qos_delete_retry.get(mac_addr, 0) + 1
+                        if retry > 2:  # 2 次采集后放弃等待
+                            qos_deleting_set.discard(mac_addr)
+                            qos_delete_retry.pop(mac_addr, None)
+                            log_warning(f"QoS解除限速超时放弃: MAC={mac_addr}，路由器可能未同步")
+                        else:
+                            qos_delete_retry[mac_addr] = retry
                 elif mac_addr in qos_map:
                     qos = qos_map[mac_addr]
                     device_info["qos_enabled"] = 1
