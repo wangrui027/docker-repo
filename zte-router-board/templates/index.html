@@ -166,6 +166,11 @@
             background: #4f46e5;
             color: #FFF;
         }
+        .time-btn:disabled {
+            background: #d1d5db;
+            color: #9ca3af;
+            cursor: not-allowed;
+        }
         .chart-box {
             height: 280px;
             width: 100%;
@@ -301,7 +306,7 @@
     <h1>📡 网络设备看板</h1>
 
     <div class="table-wrapper">
-        <div class="table-title">🖥️ 设备列表</div>
+        <div class="table-title">🖥️ 设备列表 <button class="time-btn" id="batchDeleteBtn" onclick="batchDeleteQos()" disabled style="margin-left:12px">解除限速</button></div>
         <table class="device-table" id="deviceTable">
             <thead>
                 <tr>
@@ -573,6 +578,8 @@
             }
 
             renderDeviceTable();
+            updateSelectAllCheckbox();
+            updateBatchDeleteBtn();
             if (selectedMacs.size > 0) await refreshCharts();
         } catch (err) {
             console.error('获取数据失败', err);
@@ -636,6 +643,7 @@
                 }
                 // 更新全选框状态
                 updateSelectAllCheckbox();
+                updateBatchDeleteBtn();
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(selectedMacs)));
                 refreshCharts();
             });
@@ -643,6 +651,18 @@
     }
 
     // 更新全选框状态
+    function updateBatchDeleteBtn() {
+        const btn = document.getElementById('batchDeleteBtn');
+        if (!btn) return;
+        const hasSelected = (selectedMacs.size > 0);
+        btn.disabled = !hasSelected;
+        if (hasSelected) {
+            btn.classList.add('active');
+        } else {
+            btn.classList.remove('active');
+        }
+    }
+
     function updateSelectAllCheckbox() {
         const allCheckboxes = document.querySelectorAll('.device-checkbox');
         const checkedCount = document.querySelectorAll('.device-checkbox:checked').length;
@@ -685,6 +705,7 @@
                 clearLegendStateForRemovedMacs(removedMacs);
             }
 
+            updateBatchDeleteBtn();
             localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(selectedMacs)));
             refreshCharts();
         });
@@ -1039,6 +1060,7 @@
 
     document.addEventListener('DOMContentLoaded', async () => {
         restoreSelectedMacs();
+        updateBatchDeleteBtn();
         restoreTimeRange();
         restoreLinkChartsState();
         initCharts();
@@ -1082,6 +1104,25 @@
 
     function closeQosModal() {
         document.getElementById('qosModal').classList.remove('show');
+    }
+
+    async function batchDeleteQos() {
+        const selected = Array.from(selectedMacs);
+        if (selected.length === 0) return;
+        if (!confirm(`确定对已勾选的 ${selected.length} 个设备解除限速？`)) return;
+        try {
+            const macsParam = selected.join(',');
+            const resp = await axios.get('/api/qos-batch-delete', { params: { macs: macsParam } });
+            if (resp.data.status === 'ok') {
+                alert(resp.data.message);
+                fetchAllData();
+            } else {
+                alert('操作失败: ' + (resp.data.message || '未知错误'));
+            }
+        } catch (err) {
+            console.error('批量解除限速失败', err);
+            alert('操作失败，请检查网络连接');
+        }
     }
 
     async function saveQosLimit() {
