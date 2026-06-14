@@ -994,7 +994,11 @@ def get_session_token(session):
 
 def qos_api_post(session, form_data):
     """POST 调用 QoS 限速 API，返回响应文本"""
+    action = form_data.get("IF_ACTION", "?")
+    mac = form_data.get("MACDev", form_data.get("_InstID", "?"))
+    log_info(f"[QoS API] POST {action} | mac/inst={mac} | params={form_data}")
     resp = session.post(QOS_API_URL, data=form_data, timeout=10)
+    log_info(f"[QoS API] 响应 HTTP {resp.status_code} | body={resp.text}")
     if resp.status_code != 200:
         raise Exception(f"QoS API POST 失败，HTTP {resp.status_code}")
     return resp.text
