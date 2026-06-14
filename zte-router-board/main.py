@@ -507,6 +507,10 @@ def self_login():
     resp = session.post(f"{ROUTER_BASE}/?_type=loginData&_tag=login_entry", data=payload)
     if resp.status_code != 200:
         raise Exception("自主登录失败，HTTP状态码: " + str(resp.status_code))
+    resp_text = resp.text[:200]
+    log_info(f"登录响应: {resp_text}")
+    if "login_failed" in resp_text or "密码" in resp_text:
+        raise Exception("自主登录失败，可能密码错误或路由器拒绝登录")
     save_self_session(session)
     return session
 
@@ -562,10 +566,49 @@ def get_effective_cookie_and_session():
                 reset_valid_cache()
         log_warning("所有Cookie失效，执行自主登录...")
         new_session = self_login()
+        if not check_session_valid(new_session):
+            log_warning("登录后Session仍无效，等待3秒后重试")
+            time.sleep(3)
+            new_session = self_login()
         self_session = new_session
         self_cookie_valid = True
         reset_valid_cache()
         return new_session, 'new_login'
+
+
+# ---------- 自动分时限速辅助函数 ----------
+def in_time_window(days, time_start, time_end):
+    """判断当前时间是否在指定的星期+时间段窗口内（支持跨天），days: 1=周一~7=周日"""
+    now = datetime.now()
+    weekday = now.weekday() + 1  # Python weekday(): 0=周一 → 转换为 1=周一
+    if weekday not in days:
+        return False
+    current_min = now.hour * 60 + now.minute
+    sh, sm = map(int, time_start.split(':'))
+    eh, em = map(int, time_end.split(':'))
+    start_min = sh * 60 + sm
+    end_min = eh * 60 + em
+    if end_min <= start_min:  # 跨天窗口（如 22:00 ~ 08:00）
+        return current_min >= start_min or current_min < end_min
+    return start_min <= current_min < end_min
+
+
+def calc_remaining_minutes(time_end):
+    """计算从当前时间到下一次 time_end 的剩余分钟数"""
+    now = datetime.now()
+    eh, em = map(int, time_end.split(':'))
+    end_dt = now.replace(hour=eh, minute=em, second=0, microsecond=0)
+    if end_dt <= now:
+        end_dt += timedelta(days=1)  # 已经过了，取明天同一时间
+    return max(1, int((end_dt - now).total_seconds() / 60))
+
+
+def match_auto_qos_device(dev_name, ip, mac, device_list):
+    """检查设备是否匹配策略中的设备列表"""
+    for entry in device_list:
+        if entry == dev_name or entry == ip or entry == mac:
+            return True
+    return False
 
 
 # ---------- 数据采集任务 ----------
@@ -583,7 +626,12 @@ def fetch_and_process():
         xml_url = f"{ROUTER_BASE}/?_type=vueData&_tag=localnet_lan_info_lua&_={timestamp}"
         response = session.get(xml_url, timeout=10)
         xml_content = response.text
-        root = ET.fromstring(xml_content)
+        try:
+            root = ET.fromstring(xml_content)
+        except ET.ParseError:
+            preview = xml_content[:300] if xml_content else "(空响应)"
+            log_warning(f"路由器返回非 XML 内容: HTTP={response.status_code}, len={len(xml_content)}, preview={preview}")
+            raise
 
         # 解析 QoS 限速规则（OBJ_QOS_BCRULE_ID），按 MAC 建立索引
         qos_map = {}  # MAC → {"qos_enabled": 1, "qos_max_upload_kbps": ..., "qos_max_download_kbps": ...}
@@ -727,6 +775,89 @@ def fetch_and_process():
         if matched_macs:
             with db_lock:
                 update_devices_offline(matched_macs)
+        # ===== 自动分时限速策略（纯配置驱动，无需 DB 持久化） =====
+        if AUTO_QOS_SCHEDULES:
+            for policy in AUTO_QOS_SCHEDULES:
+                days = policy.get("days", [])
+                t_start = policy.get("time_start", "00:00")
+                t_end = policy.get("time_end", "00:00")
+                devices_list = policy.get("devices", [])
+                max_up = int(float(policy.get("max_upload_mbps", 0) or 0) * 1000)
+                max_down = int(float(policy.get("max_download_mbps", 0) or 0) * 1000)
+                in_window = in_time_window(days, t_start, t_end)
+
+                for inst in root.findall(".//OBJ_LAN_INFO_ID/Instance"):
+                    dev = {}
+                    for pn, pv in zip(inst.findall("ParaName"), inst.findall("ParaValue")):
+                        dev[pn.text] = pv.text if pv.text is not None else ""
+                    mac = dev.get("MACAddress", "")
+                    name = dev.get("DevName", "")
+                    ip = dev.get("IPAddress", "")
+                    if not match_auto_qos_device(name, ip, mac, devices_list):
+                        continue
+
+                    # 查当前 DB 中的 QoS 状态
+                    with sqlite3.connect(DB_FILE) as conn:
+                        cur = conn.execute(
+                            "SELECT qos_enabled, qos_inst_id, qos_max_upload_kbps, qos_max_download_kbps "
+                            "FROM device_info WHERE macaddress=?", (mac,))
+                        row = cur.fetchone()
+                    qos_on = bool(row[0]) if row else False
+                    inst_id = row[1] if row else None
+                    db_up = int(row[2] or 0) if row else 0
+                    db_down = int(row[3] or 0) if row else 0
+                    qos_matches_policy = qos_on and db_up == max_up and db_down == max_down
+
+                    if in_window and max_up > 0 and max_down > 0 and not qos_matches_policy:
+                        # 窗口内 + 速率不一致 → 应用自动限速
+                        try:
+                            token = get_session_token(session)  # 复用 fetch_and_process 已获取的 session
+                            sntp = normalize_sntp_time(dev.get("SNTPTime", ""))
+                            existing = inst_id if inst_id else "-1"
+                            form_data = {
+                                "MACDev": mac, "BandwithRateMaxDown": str(max_down),
+                                "BandwithRateMaxUp": str(max_up), "UserName": mac,
+                                "IF_ACTION": "Apply", "_InstID": existing,
+                                "_sessionTOKEN": token
+                            }
+                            post_resp = qos_api_post(session, form_data)
+                            try:
+                                root2 = ET.fromstring(post_resp)
+                                el = root2.find("_InstID")
+                                if el is not None and el.text:
+                                    inst_id = el.text
+                            except Exception:
+                                pass
+                            with db_lock:
+                                with sqlite3.connect(DB_FILE) as conn:
+                                    conn.execute(
+                                        "UPDATE device_info SET qos_enabled=1, qos_inst_id=?, "
+                                        "qos_max_upload_kbps=?, qos_max_download_kbps=?, "
+                                        "qos_limit_time=?, qos_duration_minutes=? WHERE macaddress=?",
+                                        (inst_id, max_up, max_down, sntp,
+                                         calc_remaining_minutes(t_end), mac))
+                            log_info(f"自动限速已应用: {name}({mac}) → up={max_up}Kbps down={max_down}Kbps")
+                        except Exception as e:
+                            log_warning(f"自动限速失败: {name}({mac}), {e}")
+
+                    elif not in_window and qos_matches_policy:
+                        # 窗口外 + 速率匹配自动策略 → 解除自动限速
+                        try:
+                            if inst_id:
+                                token = get_session_token(session)  # 复用已获取的 session
+                                form_data = {"IF_ACTION": "Delete", "_InstID": inst_id,
+                                             "_sessionTOKEN": token}
+                                qos_api_post(session, form_data)
+                            with db_lock:
+                                with sqlite3.connect(DB_FILE) as conn:
+                                    conn.execute(
+                                        "UPDATE device_info SET qos_enabled=0, qos_inst_id=NULL, "
+                                        "qos_limit_time=NULL, qos_duration_minutes=0 "
+                                        "WHERE macaddress=?", (mac,))
+                            log_info(f"自动限速已解除: {name}({mac})")
+                        except Exception as e:
+                            log_warning(f"自动限速解除失败: {name}({mac}), {e}")
+
         if source == 'plugin':
             with lock:
                 last_valid_time = time.time()

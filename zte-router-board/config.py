@@ -31,5 +31,22 @@ QOS_RESTRICTED_IPS = [
     "192.168.100.54",     # yoga14s
 ]
 
+# ========== 自动分时限速策略 ==========
+# 每条策略包含：生效日期、时间段、目标设备、限速速率
+# days: 1=周一 ~ 7=周日，例如 [1,2,3,4,5] 表示周一至周五
+# time_start / time_end: 格式 HH:MM，允许跨天（如 22:00 ~ 08:00）
+# devices: 设备标识列表（支持名称、IP、MAC 任一匹配）
+# max_upload_mbps / max_download_mbps: 限速速率（Mbps）
+AUTO_QOS_SCHEDULES = [
+    {
+        "days": [6,7],
+        "time_start": "01:00",
+        "time_end": "09:30",
+        "devices": ["X96_X6", "小度青禾学习手机", "红米K30S", "OPPO Reno3 Pro"],
+        "max_upload_mbps": 0.01,
+        "max_download_mbps": 0.01,
+    },
+]
+
 # ========== 数据保留天数 ==========
 DATA_RETENTION_DAYS = 7
