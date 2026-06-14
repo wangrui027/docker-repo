@@ -73,6 +73,20 @@ def get_client_ip():
     return request.remote_addr or 'unknown IP'
 
 
+def is_qos_restricted(ip):
+    """检查 IP 是否不允许操作限速（最后一位 < 10 或在禁止列表中）"""
+    if not ip:
+        return False
+    # IP 在配置的禁止列表中
+    if ip in QOS_RESTRICTED_IPS:
+        return True
+    # IP 最后一位 < 10（路由器基础设施）
+    try:
+        return int(ip.split('.')[-1]) < 10
+    except (ValueError, IndexError):
+        return False
+
+
 # ========== 时间解析辅助函数 ==========
 def parse_time_to_datetime(time_str):
     """尝试解析两种常见时间格式，返回 datetime 对象或 None"""
@@ -647,7 +661,7 @@ def fetch_and_process():
         # ===== 自动解除过期 QoS 限速 =====
         with sqlite3.connect(DB_FILE) as conn:
             expired = conn.execute(
-                "SELECT macaddress, qos_inst_id, qos_limit_time, qos_duration_minutes "
+                "SELECT macaddress, qos_inst_id, qos_limit_time, qos_duration_minutes, ipaddress "
                 "FROM device_info WHERE qos_enabled = 1 AND qos_duration_minutes > 0"
             ).fetchall()
         if expired:
@@ -664,7 +678,10 @@ def fetch_and_process():
                 if mac and sntp:
                     sntp_map[mac] = sntp
 
-            for mac, qos_inst_id, limit_time_str, dur_min in expired:
+            for mac, qos_inst_id, limit_time_str, dur_min, ip_addr in expired:
+                # 受限制 IP 的设备永久限速，不自动解除
+                if is_qos_restricted(ip_addr):
+                    continue
                 if not limit_time_str or mac not in sntp_map:
                     continue
                 try:
@@ -723,7 +740,8 @@ def fetch_and_process():
 
 @app.route('/')
 def dashboard():
-    return render_template('index.html', fetch_interval=FETCH_INTERVAL_SECONDS)
+    return render_template('index.html', fetch_interval=FETCH_INTERVAL_SECONDS,
+                          qos_restricted_ips=QOS_RESTRICTED_IPS)
 
 
 # ---------- HTTP 服务接口 ----------
@@ -1009,6 +1027,13 @@ def set_qos_limit():
     if not mac:
         return jsonify({"status": "error", "message": "MAC 地址不能为空"}), 400
 
+    # IP 最后一位 < 10 的设备不允许操作限速（路由器基础设施或特殊设备）
+    with sqlite3.connect(DB_FILE) as conn:
+        cur = conn.execute("SELECT ipaddress FROM device_info WHERE macaddress = ?", (mac,))
+        row = cur.fetchone()
+    if row and row[0] and is_qos_restricted(row[0]):
+        return jsonify({"status": "error", "message": "该设备不允许操作限速"}), 403
+
     try:
         session, _ = get_effective_cookie_and_session()
         session_token = get_session_token(session)
@@ -1137,11 +1162,15 @@ def batch_delete_qos():
         with sqlite3.connect(DB_FILE) as conn:
             placeholders = ','.join(['?'] * len(macs))
             rows = conn.execute(
-                f"SELECT macaddress, qos_inst_id FROM device_info "
+                f"SELECT macaddress, qos_inst_id, ipaddress FROM device_info "
                 f"WHERE macaddress IN ({placeholders}) AND qos_enabled = 1 AND qos_inst_id IS NOT NULL",
                 macs
             ).fetchall()
-        mac_list = [(row[0], row[1]) for row in rows]
+        # 过滤受限制 IP 的设备（永久限速，不可解除）
+        mac_list = []
+        for row in rows:
+            if not is_qos_restricted(row[2] or ''):
+                mac_list.append((row[0], row[1]))
 
     if not mac_list:
         return jsonify({"status": "ok", "message": "没有需要解除的限速", "count": 0})

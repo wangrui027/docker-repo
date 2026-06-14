@@ -86,25 +86,26 @@
         }
         .traffic-text {
             font-family: ui-monospace, SFMono-Regular, monospace;
-            font-weight: 500;
+            font-weight: 400;
             white-space: nowrap;
         }
         /* 速率样式调整 - 512KB/s 显示橙色 */
         .speed-normal {
-            font-weight: 600;
+            font-weight: 400;
             color: #1e293b;
         }
         .speed-warning {
-            font-weight: 700;
+            font-weight: 400;
             color: #f97316;
         }
         .speed-critical {
-            font-weight: 700;
+            font-weight: 400;
             color: #dc2626;
         }
-        .checkbox-col {
+        .device-table .checkbox-col {
+            width: 55px;
             text-align: center;
-            white-space: nowrap;
+            vertical-align: middle;
         }
         .checkbox-col input[type="checkbox"] {
             transform: scale(1.15);
@@ -112,11 +113,11 @@
         }
 
         /* 流量大小颜色样式 */
-        .traffic-512m { color: #f97316; font-weight: 600; }
-        .traffic-1g { color: #ea580c; font-weight: 600; }
-        .traffic-2g { color: #dc2626; font-weight: 700; }
-        .traffic-5g { color: #991b1b; font-weight: 700; }
-        .traffic-default { color: #1e293b; }
+        .traffic-512m { color: #f97316; font-weight: 400; }
+        .traffic-1g { color: #ea580c; font-weight: 400; }
+        .traffic-2g { color: #dc2626; font-weight: 400; }
+        .traffic-5g { color: #991b1b; font-weight: 400; }
+        .traffic-default { color: #1e293b; font-weight: 400; }
 
         /* 图表区域保持原有半透明风格 */
         .charts-section {
@@ -211,6 +212,7 @@
         .qos-link:hover { text-decoration: underline; }
         .qos-limited { line-height: 1.4; }
         .qos-normal { line-height: 2.8; display: inline-block; }
+        .arr-up, .arr-down { color: #9ca3af; font-size: 1rem; font-weight: 400; }
 
         /* 弹窗遮罩 */
         .modal-overlay {
@@ -311,19 +313,16 @@
             <thead>
                 <tr>
                     <th width="40" class="checkbox-col"><input type="checkbox" id="selectAllCheckbox"></th>
-                    <th>设备名称</th>
-                    <th>在线状态</th>
-                    <th>在线/离线时长</th>
-                    <th>上行流量</th>
-                    <th>下行流量</th>
-                    <th>上传速率</th>
-                    <th>下载速率</th>
+                    <th>设备</th>
+                    <th>状态</th>
+                    <th>流量</th>
+                    <th>速率</th>
                     <th>限速策略</th>
                     <th>限速剩余</th>
                 </tr>
             </thead>
             <tbody id="deviceTableBody">
-                <tr><td colspan="10" style="text-align:center;padding:2rem 0;color:#64748b;">加载设备中...</td></tr>
+                <tr><td colspan="7" style="text-align:center;padding:2rem 0;color:#64748b;">加载设备中...</td></tr>
             </tbody>
         </table>
     </div>
@@ -363,6 +362,7 @@
     const LEGEND_STATE_KEY = 'chart_legend_selected_state';
     const LINK_CHARTS_KEY = 'link_charts_enabled';
     let chartLinked = true;  // 默认开启联动
+    const QOS_RESTRICTED_IPS = {{ qos_restricted_ips | tojson }};
 
     // 辅助函数
     function formatBytes(bytes) {
@@ -386,15 +386,27 @@
         return mbps.toFixed(2) + ' Mbps';
     }
 
-    function renderQosCell(dev) {
+    function renderQosCell(dev, restricted) {
+        if (restricted) {
+            // IP 最后一位 < 10，不允许操作限速，路由器返回的限速视为永久
+            if (dev.qos_enabled === 1) {
+                const up = formatQosLimit(dev.qos_max_upload_kbps);
+                const down = formatQosLimit(dev.qos_max_download_kbps);
+                return '<span class="qos-link qos-limited" style="cursor:default;text-decoration:none">'
+                    + '<span class="arr-up">&#x25B4;</span> ' + up + '<br>'
+                    + '<span class="arr-down">&#x25BE;</span> ' + down
+                    + '<br><span style="font-size:0.65rem;color:#9ca3af">永久</span></span>';
+            }
+            return '<span class="duration-text">--</span>';
+        }
         if (!dev.qos_enabled || dev.qos_enabled === 0) {
             return '<a class="qos-link qos-normal" onclick="openQosModal(\'' + dev.mac + '\')">不限速</a>';
         }
         const up = formatQosLimit(dev.qos_max_upload_kbps);
         const down = formatQosLimit(dev.qos_max_download_kbps);
         return '<a class="qos-link qos-limited" onclick="openQosModal(\'' + dev.mac + '\')">'
-            + '<span class="qos-up">&#x21E7; ' + up + '</span><br>'
-            + '<span class="qos-down">&#x21E9; ' + down + '</span>'
+            + '<span class="arr-up">&#x25B4;</span> ' + up + '<br>'
+            + '<span class="arr-down">&#x25BE;</span> ' + down
             + '</a>';
     }
 
@@ -519,13 +531,14 @@
             const devices = resp.data.data || [];
             if (!devices.length) {
                 const tbody = document.getElementById('deviceTableBody');
-                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:2rem 0;color:#64748b;">暂无设备，请检查 PRESET_MATCH_LIST</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem 0;color:#64748b;">暂无设备，请检查 PRESET_MATCH_LIST</td></tr>';
                 return;
             }
             allDevices = devices.map(d => ({
                 id: d.id,
                 mac: d.macaddress,
                 devname: d.devname,
+                ipaddress: d.ipaddress || '',
                 active: d.active === 1,
                 online_duration_sec: d.online_duration_sec,
                 offline_duration_sec: d.offline_duration_sec,
@@ -614,18 +627,19 @@
 
             const row = document.createElement('tr');
             row.setAttribute('data-mac', dev.mac);
+            const ip = dev.ipaddress || '';
+            const ipLast = parseInt(ip.split('.').pop()) || 0;
+            const qosRestricted = ipLast < 10 || QOS_RESTRICTED_IPS.includes(ip);
+
             row.innerHTML = `
                 <td class="checkbox-col">
-                    <input type="checkbox" class="device-checkbox" data-mac="${dev.mac}" ${isChecked ? 'checked' : ''}>
+                    <input type="checkbox" class="device-checkbox" data-mac="${dev.mac}" data-ip="${ip}" ${isChecked ? 'checked' : ''}>
                 </td>
-                <td class="device-name">${escapeHtml(dev.devname)}</td>
-                <td><span class="status-indicator ${isOnline ? 'status-online' : 'status-offline'}"></span>${isOnline ? '在线' : '离线'}</td>
-                <td class="duration-cell"><span class="duration-text">${durationText}</span></td>
-                <td class="traffic-text ${uploadTrafficClass}">${sendFmt}</td>
-                <td class="traffic-text ${downloadTrafficClass}">${recvFmt}</td>
-                <td class="${uploadClass}">${uploadSpeedFmt}</td>
-                <td class="${downloadClass}">${downloadSpeedFmt}</td>
-                <td>${renderQosCell(dev)}</td>
+                <td class="device-name">${escapeHtml(dev.devname)}<br><span style="font-size:0.7rem;color:#6b7280">${ip}</span></td>
+                <td><span class="status-indicator ${isOnline ? 'status-online' : 'status-offline'}"></span>${isOnline ? '在线' : '离线'}&nbsp;&nbsp;<span class="duration-text">${durationText}</span></td>
+                <td class="traffic-text"><span class="arr-up">&#x25B4;</span> <span class="${uploadTrafficClass}">${sendFmt}</span><br><span class="arr-down">&#x25BE;</span> <span class="${downloadTrafficClass}">${recvFmt}</span></td>
+                <td><span class="arr-up">&#x25B4;</span> <span class="${uploadClass}">${uploadSpeedFmt}</span><br><span class="arr-down">&#x25BE;</span> <span class="${downloadClass}">${downloadSpeedFmt}</span></td>
+                <td>${renderQosCell(dev, qosRestricted)}</td>
                 <td class="qos-remain-cell"><span class="duration-text">${computeQosRemaining(dev)}</span></td>
             `;
             tbody.appendChild(row);
