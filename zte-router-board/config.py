@@ -1,6 +1,4 @@
 # config.py
-import os
-
 # ========== 路由器连接配置 ==========
 ROUTER_BASE = "http://zte.home"
 # 优先从环境变量取密码，否则使用硬编码（建议设置环境变量）
