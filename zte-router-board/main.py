@@ -618,6 +618,9 @@ def fetch_and_process():
                     device_info["qos_max_download_kbps"] = 0
                     device_info["qos_limit_time"] = None
                     device_info["qos_duration_minutes"] = 0
+                    # XML 中已无此限速规则 → 路由器已同步，清除标记
+                    if mac_addr not in qos_map:
+                        qos_deleting_set.discard(mac_addr)
                 elif mac_addr in qos_map:
                     qos = qos_map[mac_addr]
                     device_info["qos_enabled"] = 1
@@ -689,7 +692,6 @@ def fetch_and_process():
                                         "UPDATE device_info SET qos_enabled=0, qos_inst_id=NULL, "
                                         "qos_limit_time=NULL, qos_duration_minutes=0 WHERE macaddress=?",
                                         (mac,))
-                            qos_deleting_set.discard(mac)
                 except Exception as e:
                     log_warning(f"QoS过期检查异常: {mac}, {e}")
 
@@ -987,22 +989,6 @@ def qos_api_post(session, form_data):
     return resp.text
 
 
-def qos_api_get_inst_ids(session):
-    """GET 调用 QoS API，解析返回 XML，返回 {MAC: _InstID} 映射"""
-    resp = session.get(QOS_API_URL, timeout=10)
-    if resp.status_code != 200:
-        raise Exception(f"QoS API GET 失败，HTTP {resp.status_code}")
-    root = ET.fromstring(resp.text)
-    result = {}
-    for inst in root.findall(".//OBJ_QOS_BCRULE_ID/Instance"):
-        qos_data = {}
-        for pn, pv in zip(inst.findall("ParaName"), inst.findall("ParaValue")):
-            qos_data[pn.text] = pv.text if pv.text is not None else ""
-        mac = qos_data.get("MACDev", "")
-        inst_id = qos_data.get("_InstID", "")
-        if mac and inst_id:
-            result[mac] = inst_id
-    return result
 
 
 # ===== QoS 限速设置接口 =====
@@ -1046,16 +1032,10 @@ def set_qos_limit():
             post_resp_text = qos_api_post(session, form_data)
 
             # 从 POST 响应直接解析 _InstID（初次设置时为 IGD.QoSBandwidthRuleN）
-            real_inst_id = existing_inst_id
             try:
                 post_root = ET.fromstring(post_resp_text)
                 inst_id_el = post_root.find("_InstID")
-                if inst_id_el is not None and inst_id_el.text:
-                    real_inst_id = inst_id_el.text
-                else:
-                    # 兼容旧格式：尝试从 OBJ_QOS_BCRULE_ID 中查找
-                    inst_map = qos_api_get_inst_ids(session)
-                    real_inst_id = inst_map.get(mac, existing_inst_id)
+                real_inst_id = inst_id_el.text if (inst_id_el is not None and inst_id_el.text) else existing_inst_id
             except Exception:
                 real_inst_id = existing_inst_id
 
@@ -1124,9 +1104,8 @@ def set_qos_limit():
                             qos_duration_minutes = 0
                         WHERE macaddress = ?
                     ''', (mac,))
-            qos_deleting_set.discard(mac)
 
-            log_info(f"[{client_ip}] QoS限速已解除: MAC={mac}")
+            log_info(f"[{client_ip}] QoS限速已解除: MAC={mac}，标记待采集确认")
             return jsonify({"status": "ok", "message": "限速已解除"})
 
     except Exception as e:
@@ -1194,11 +1173,9 @@ def batch_delete_qos():
                         "WHERE macaddress=?",
                         (mac,))
             success += 1
-            qos_deleting_set.discard(mac)
             log_info(f"[{client_ip}] 批量解除限速: MAC={mac}, instID={qos_inst_id}")
         except Exception as e:
             failed += 1
-            qos_deleting_set.discard(mac)
             log_warning(f"[{client_ip}] 批量解除限速失败: MAC={mac}, {e}")
 
     log_info(f"[{client_ip}] 批量解除完成: 成功{success}, 失败{failed}")
