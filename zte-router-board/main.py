@@ -45,7 +45,6 @@ LOG_LEVEL = "INFO"  # "INFO" 或 "WARNING"
 DB_FILE = "data/data.db"
 db_lock = threading.Lock()  # 数据库写入锁
 qos_deleting_set = set()  # 正在解除限速的设备 MAC 集合（内存标记）
-qos_delete_retry = {}  # MAC → 采集次数，超过阈值自动放弃
 
 # =====================
 
@@ -620,18 +619,7 @@ def fetch_and_process():
                     device_info["qos_limit_time"] = None
                     device_info["qos_duration_minutes"] = 0
                     if mac_addr not in qos_map:
-                        # 路由器已同步，清除标记
-                        qos_deleting_set.discard(mac_addr)
-                        qos_delete_retry.pop(mac_addr, None)
-                    else:
-                        # 路由器尚未同步，累计重试次数
-                        retry = qos_delete_retry.get(mac_addr, 0) + 1
-                        if retry > 2:  # 2 次采集后放弃等待
-                            qos_deleting_set.discard(mac_addr)
-                            qos_delete_retry.pop(mac_addr, None)
-                            log_warning(f"QoS解除限速超时放弃: MAC={mac_addr}，路由器可能未同步")
-                        else:
-                            qos_delete_retry[mac_addr] = retry
+                        qos_deleting_set.discard(mac_addr)  # 路由器已同步
                 elif mac_addr in qos_map:
                     qos = qos_map[mac_addr]
                     device_info["qos_enabled"] = 1
@@ -1164,7 +1152,6 @@ def batch_delete_qos():
 
     try:
         session, _ = get_effective_cookie_and_session()
-        session_token = get_session_token(session)
     except Exception as e:
         for mac, _ in mac_list:
             qos_deleting_set.discard(mac)
@@ -1174,6 +1161,8 @@ def batch_delete_qos():
     failed = 0
     for mac, qos_inst_id in mac_list:
         try:
+            # 每次 Delete 需重新获取 _sessionTOKEN（路由器只允许一次性使用）
+            session_token = get_session_token(session)
             form_data = {
                 "IF_ACTION": "Delete",
                 "_InstID": qos_inst_id,
