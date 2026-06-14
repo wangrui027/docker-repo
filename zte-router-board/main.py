@@ -44,6 +44,7 @@ LOG_LEVEL = "INFO"  # "INFO" 或 "WARNING"
 # ===== 数据库配置 =====
 DB_FILE = "data/data.db"
 db_lock = threading.Lock()  # 数据库写入锁
+qos_deleting_set = set()  # 正在解除限速的设备 MAC 集合（内存标记）
 
 # =====================
 
@@ -609,8 +610,15 @@ def fetch_and_process():
             if dev_name in PRESET_MATCH_LIST or ip_addr in PRESET_MATCH_LIST or mac_addr in PRESET_MATCH_LIST:
                 matched = True
             if matched:
-                # 合并 QoS 限速信息
-                if mac_addr in qos_map:
+                # 合并 QoS 限速信息（正在解除限速的设备强制跳过）
+                if mac_addr in qos_deleting_set:
+                    device_info["qos_enabled"] = 0
+                    device_info["qos_inst_id"] = None
+                    device_info["qos_max_upload_kbps"] = 0
+                    device_info["qos_max_download_kbps"] = 0
+                    device_info["qos_limit_time"] = None
+                    device_info["qos_duration_minutes"] = 0
+                elif mac_addr in qos_map:
                     qos = qos_map[mac_addr]
                     device_info["qos_enabled"] = 1
                     device_info["qos_inst_id"] = qos["qos_inst_id"]
@@ -664,6 +672,7 @@ def fetch_and_process():
                         expire_dt = limit_dt + timedelta(minutes=dur_min)
                         if current_dt >= expire_dt:
                             log_info(f"QoS限速已过期，自动解除: MAC={mac}, instID={qos_inst_id}, duration={dur_min}min")
+                            qos_deleting_set.add(mac)
                             try:
                                 token = get_session_token(session)
                                 form_data = {
@@ -680,6 +689,7 @@ def fetch_and_process():
                                         "UPDATE device_info SET qos_enabled=0, qos_inst_id=NULL, "
                                         "qos_limit_time=NULL, qos_duration_minutes=0 WHERE macaddress=?",
                                         (mac,))
+                            qos_deleting_set.discard(mac)
                 except Exception as e:
                     log_warning(f"QoS过期检查异常: {mac}, {e}")
 
@@ -1087,6 +1097,8 @@ def set_qos_limit():
 
         else:
             # ======== 关闭限速 ========
+            qos_deleting_set.add(mac)  # 内存标记，防止采集线程重新填充 QoS
+
             with sqlite3.connect(DB_FILE) as conn:
                 cur = conn.execute(
                     "SELECT qos_inst_id FROM device_info WHERE macaddress = ?", (mac,))
@@ -1112,6 +1124,7 @@ def set_qos_limit():
                             qos_duration_minutes = 0
                         WHERE macaddress = ?
                     ''', (mac,))
+            qos_deleting_set.discard(mac)
 
             log_info(f"[{client_ip}] QoS限速已解除: MAC={mac}")
             return jsonify({"status": "ok", "message": "限速已解除"})
@@ -1119,6 +1132,77 @@ def set_qos_limit():
     except Exception as e:
         log_warning(f"[{client_ip}] QoS限速设置失败: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# ===== 批量解除 QoS 限速 =====
+@app.route('/api/qos-batch-delete', methods=['GET'])
+def batch_delete_qos():
+    """接收 macs=all 或 macs=mac1,mac2 批量解除限速"""
+    client_ip = get_client_ip()
+    macs_param = request.args.get('macs', '')
+
+    if macs_param == 'all':
+        with sqlite3.connect(DB_FILE) as conn:
+            rows = conn.execute(
+                "SELECT macaddress, qos_inst_id FROM device_info "
+                "WHERE qos_enabled = 1 AND qos_inst_id IS NOT NULL"
+            ).fetchall()
+        mac_list = [(row[0], row[1]) for row in rows]
+    else:
+        macs = [m.strip() for m in macs_param.split(',') if m.strip()]
+        if not macs:
+            return jsonify({"status": "error", "message": "macs 不能为空"}), 400
+        with sqlite3.connect(DB_FILE) as conn:
+            placeholders = ','.join(['?'] * len(macs))
+            rows = conn.execute(
+                f"SELECT macaddress, qos_inst_id FROM device_info "
+                f"WHERE macaddress IN ({placeholders}) AND qos_enabled = 1 AND qos_inst_id IS NOT NULL",
+                macs
+            ).fetchall()
+        mac_list = [(row[0], row[1]) for row in rows]
+
+    if not mac_list:
+        return jsonify({"status": "ok", "message": "没有需要解除的限速", "count": 0})
+
+    # 内存标记所有目标设备为"正在删除"，防止采集线程重新填充 QoS
+    for mac, _ in mac_list:
+        qos_deleting_set.add(mac)
+
+    try:
+        session, _ = get_effective_cookie_and_session()
+        session_token = get_session_token(session)
+    except Exception as e:
+        for mac, _ in mac_list:
+            qos_deleting_set.discard(mac)
+        return jsonify({"status": "error", "message": f"登录失败: {e}"}), 500
+
+    success = 0
+    failed = 0
+    for mac, qos_inst_id in mac_list:
+        try:
+            form_data = {
+                "IF_ACTION": "Delete",
+                "_InstID": qos_inst_id,
+                "_sessionTOKEN": session_token
+            }
+            qos_api_post(session, form_data)
+            with db_lock:
+                with sqlite3.connect(DB_FILE) as conn:
+                    conn.execute(
+                        "UPDATE device_info SET qos_enabled=0, qos_inst_id=NULL, "
+                        "qos_limit_time=NULL, qos_duration_minutes=0 "
+                        "WHERE macaddress=?",
+                        (mac,))
+            success += 1
+            qos_deleting_set.discard(mac)
+            log_info(f"[{client_ip}] 批量解除限速: MAC={mac}, instID={qos_inst_id}")
+        except Exception as e:
+            failed += 1
+            qos_deleting_set.discard(mac)
+            log_warning(f"[{client_ip}] 批量解除限速失败: MAC={mac}, {e}")
+
+    log_info(f"[{client_ip}] 批量解除完成: 成功{success}, 失败{failed}")
+    return jsonify({"status": "ok", "message": f"成功{success}个，失败{failed}个", "success": success, "failed": failed})
 
 
 # ---------- 定时任务调度 ----------
