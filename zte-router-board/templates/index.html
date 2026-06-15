@@ -213,6 +213,16 @@
         .qos-limited { line-height: 1.4; }
         .qos-normal { line-height: 2.8; display: inline-block; }
         .arr-up, .arr-down { color: #9ca3af; font-size: 1rem; font-weight: 400; }
+        .batch-btn {
+            background: #d1d5db; color: #9ca3af;
+            border: none; padding: 6px 14px;
+            border-radius: 6px; cursor: pointer;
+            font-size: 0.8rem; font-weight: 500;
+            transition: 0.2s;
+        }
+        .batch-btn.active {
+            background: #4f46e5; color: #fff;
+        }
 
         /* 弹窗遮罩 */
         .modal-overlay {
@@ -308,7 +318,9 @@
     <h1>📡 网络设备看板</h1>
 
     <div class="table-wrapper">
-        <div class="table-title">🖥️ 设备列表 <button class="time-btn" id="batchDeleteBtn" onclick="batchDeleteQos()" disabled style="margin-left:12px">解除限速</button></div>
+        <div class="table-title">
+            🖥️ 设备列表
+            <button class="batch-btn" id="batchLimitBtn" onclick="batchLimitQos()" style="margin-left:12px">批量限速</button></div>
         <table class="device-table" id="deviceTable">
             <thead>
                 <tr>
@@ -592,8 +604,6 @@
             }
 
             renderDeviceTable();
-            updateSelectAllCheckbox();
-            updateBatchDeleteBtn();
             if (selectedMacs.size > 0) await refreshCharts();
         } catch (err) {
             console.error('获取数据失败', err);
@@ -659,7 +669,7 @@
                 }
                 // 更新全选框状态
                 updateSelectAllCheckbox();
-                updateBatchDeleteBtn();
+                updateBatchLimitBtn();
                 localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(selectedMacs)));
                 refreshCharts();
             });
@@ -667,12 +677,11 @@
     }
 
     // 更新全选框状态
-    function updateBatchDeleteBtn() {
-        const btn = document.getElementById('batchDeleteBtn');
+    function updateBatchLimitBtn() {
+        const btn = document.getElementById('batchLimitBtn');
         if (!btn) return;
-        const hasSelected = (selectedMacs.size > 0);
-        btn.disabled = !hasSelected;
-        if (hasSelected) {
+        const allowed = getQosAllowedMacs();
+        if (allowed.length > 0) {
             btn.classList.add('active');
         } else {
             btn.classList.remove('active');
@@ -721,7 +730,7 @@
                 clearLegendStateForRemovedMacs(removedMacs);
             }
 
-            updateBatchDeleteBtn();
+            updateBatchLimitBtn();
             localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(selectedMacs)));
             refreshCharts();
         });
@@ -1076,7 +1085,7 @@
 
     document.addEventListener('DOMContentLoaded', async () => {
         restoreSelectedMacs();
-        updateBatchDeleteBtn();
+        updateBatchLimitBtn();
         restoreTimeRange();
         restoreLinkChartsState();
         initCharts();
@@ -1089,8 +1098,41 @@
 
     // ---------- QoS 限速弹窗 ----------
     let qosModalMac = '';
+    let qosBatchMode = false;
+
+    // 过滤掉不允许操作限速的设备（IP 末位 < 10 或在禁止列表中）
+    function getQosAllowedMacs() {
+        const allowed = [];
+        for (const mac of selectedMacs) {
+            const dev = allDevices.find(d => d.mac === mac);
+            if (!dev) continue;
+            const ip = dev.ipaddress || '';
+            const ipLast = parseInt(ip.split('.').pop()) || 0;
+            if (ipLast < 10 || QOS_RESTRICTED_IPS.includes(ip)) continue;
+            allowed.push(mac);
+        }
+        return allowed;
+    }
+
+    function batchLimitQos() {
+        const allowed = getQosAllowedMacs();
+        if (allowed.length === 0) {
+            alert('所选设备均不允许操作限速');
+            return;
+        }
+        qosBatchMode = true;
+        qosModalMac = '';  // 批量模式
+        document.getElementById('qosModalDevName').textContent = '已选 ' + allowed.length + ' 台设备';
+        document.getElementById('qosModalEnabled').checked = true;
+        document.getElementById('qosModalUp').value = '';
+        document.getElementById('qosModalDown').value = '';
+        document.getElementById('qosModalDuration').value = '';
+        toggleQosSpeedRows();
+        document.getElementById('qosModal').classList.add('show');
+    }
 
     function openQosModal(mac) {
+        qosBatchMode = false;
         qosModalMac = mac;
         const dev = allDevices.find(d => d.mac === mac);
         if (!dev) return;
@@ -1122,25 +1164,6 @@
         document.getElementById('qosModal').classList.remove('show');
     }
 
-    async function batchDeleteQos() {
-        const selected = Array.from(selectedMacs);
-        if (selected.length === 0) return;
-        if (!confirm(`确定对已勾选的 ${selected.length} 个设备解除限速？`)) return;
-        try {
-            const macsParam = selected.join(',');
-            const resp = await axios.get('/api/qos-batch-delete', { params: { macs: macsParam } });
-            if (resp.data.status === 'ok') {
-                alert(resp.data.message);
-                fetchAllData();
-            } else {
-                alert('操作失败: ' + (resp.data.message || '未知错误'));
-            }
-        } catch (err) {
-            console.error('批量解除限速失败', err);
-            alert('操作失败，请检查网络连接');
-        }
-    }
-
     async function saveQosLimit() {
         const enabled = document.getElementById('qosModalEnabled').checked;
         const upKbps = parseInt(document.getElementById('qosModalUp').value) || 0;
@@ -1160,27 +1183,43 @@
         }
 
         try {
-            const resp = await axios.post('/api/qos-limit', {
-                mac: qosModalMac,
-                enabled: enabled,
-                max_upload_kbps: upKbps,
-                max_download_kbps: downKbps,
-                duration_minutes: durationMin
-            });
-            if (resp.data.status === 'ok') {
-                // 乐观更新：立即写入内存数据，避免重新打开弹窗时看到旧值
-                const dev = allDevices.find(d => d.mac === qosModalMac);
-                if (dev) {
-                    dev.qos_enabled = enabled ? 1 : 0;
-                    dev.qos_max_upload_kbps = upKbps;
-                    dev.qos_max_download_kbps = downKbps;
-                    dev.qos_duration_minutes = durationMin;
-                    dev.qos_limit_time = dev.sntp_time || '';
+            if (qosBatchMode) {
+                // 批量模式：遍历允许限速的设备逐个调用
+                const macs = getQosAllowedMacs();
+                let ok = 0, fail = 0;
+                for (const mac of macs) {
+                    try {
+                        const resp = await axios.post('/api/qos-limit', {
+                            mac: mac, enabled: enabled,
+                            max_upload_kbps: upKbps, max_download_kbps: downKbps,
+                            duration_minutes: durationMin
+                        });
+                        if (resp.data.status === 'ok') ok++; else fail++;
+                    } catch (e) { fail++; }
                 }
                 closeQosModal();
-                fetchAllData();  // 异步刷新，确保与后端一致
+                alert('批量限速完成：成功 ' + ok + ' 个，失败 ' + fail + ' 个');
+                fetchAllData();
             } else {
-                alert('保存失败: ' + (resp.data.message || '未知错误'));
+                const resp = await axios.post('/api/qos-limit', {
+                    mac: qosModalMac, enabled: enabled,
+                    max_upload_kbps: upKbps, max_download_kbps: downKbps,
+                    duration_minutes: durationMin
+                });
+                if (resp.data.status === 'ok') {
+                    const dev = allDevices.find(d => d.mac === qosModalMac);
+                    if (dev) {
+                        dev.qos_enabled = enabled ? 1 : 0;
+                        dev.qos_max_upload_kbps = upKbps;
+                        dev.qos_max_download_kbps = downKbps;
+                        dev.qos_duration_minutes = durationMin;
+                        dev.qos_limit_time = dev.sntp_time || '';
+                    }
+                    closeQosModal();
+                    fetchAllData();
+                } else {
+                    alert('保存失败: ' + (resp.data.message || '未知错误'));
+                }
             }
         } catch (err) {
             console.error('QoS保存失败', err);
