@@ -604,6 +604,7 @@
             }
 
             renderDeviceTable();
+            updateBatchLimitBtn();
             if (selectedMacs.size > 0) await refreshCharts();
         } catch (err) {
             console.error('获取数据失败', err);
@@ -1085,7 +1086,6 @@
 
     document.addEventListener('DOMContentLoaded', async () => {
         restoreSelectedMacs();
-        updateBatchLimitBtn();
         restoreTimeRange();
         restoreLinkChartsState();
         initCharts();
