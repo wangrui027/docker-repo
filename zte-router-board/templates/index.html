@@ -314,15 +314,16 @@
                 <tr>
                     <th width="40" class="checkbox-col"><input type="checkbox" id="selectAllCheckbox"></th>
                     <th>设备</th>
+                    <th>MAC地址</th>
                     <th>状态</th>
-                    <th>流量</th>
-                    <th>速率</th>
+                    <th>本次流量</th>
+                    <th>实时速率</th>
                     <th>限速策略</th>
                     <th>限速剩余</th>
                 </tr>
             </thead>
             <tbody id="deviceTableBody">
-                <tr><td colspan="7" style="text-align:center;padding:2rem 0;color:#64748b;">加载设备中...</td></tr>
+                <tr><td colspan="8" style="text-align:center;padding:2rem 0;color:#64748b;">加载设备中...</td></tr>
             </tbody>
         </table>
     </div>
@@ -531,7 +532,7 @@
             const devices = resp.data.data || [];
             if (!devices.length) {
                 const tbody = document.getElementById('deviceTableBody');
-                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem 0;color:#64748b;">暂无设备，请检查 PRESET_MATCH_LIST</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:2rem 0;color:#64748b;">暂无设备，请检查 PRESET_MATCH_LIST</td></tr>';
                 return;
             }
             allDevices = devices.map(d => ({
@@ -636,6 +637,7 @@
                     <input type="checkbox" class="device-checkbox" data-mac="${dev.mac}" data-ip="${ip}" ${isChecked ? 'checked' : ''}>
                 </td>
                 <td class="device-name">${escapeHtml(dev.devname)}<br><span style="font-size:0.7rem;color:#6b7280">${ip}</span></td>
+                <td><span class="duration-text">${escapeHtml(dev.mac)}</span></td>
                 <td><span class="status-indicator ${isOnline ? 'status-online' : 'status-offline'}"></span>${isOnline ? '在线' : '离线'}&nbsp;&nbsp;<span class="duration-text">${durationText}</span></td>
                 <td class="traffic-text"><span class="arr-up">&#x25B4;</span> <span class="${uploadTrafficClass}">${sendFmt}</span><br><span class="arr-down">&#x25BE;</span> <span class="${downloadTrafficClass}">${recvFmt}</span></td>
                 <td><span class="arr-up">&#x25B4;</span> <span class="${uploadClass}">${uploadSpeedFmt}</span><br><span class="arr-down">&#x25BE;</span> <span class="${downloadClass}">${downloadSpeedFmt}</span></td>
