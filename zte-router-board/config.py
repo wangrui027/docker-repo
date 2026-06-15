@@ -28,6 +28,7 @@ FETCH_INTERVAL_SECONDS = 5
 QOS_RESTRICTED_IPS = [
     # "192.168.100.1",   # 示例：路由器本身
     "192.168.100.114",    # r68s
+    "192.168.100.102",    # ubuntu-PC
     "192.168.100.53",     # Nihaorz-PC
     "192.168.100.54",     # yoga14s
 ]
