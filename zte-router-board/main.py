@@ -142,6 +142,7 @@ def init_db():
             conn.execute("ALTER TABLE device_info ADD COLUMN qos_inst_id TEXT")
             conn.execute("ALTER TABLE device_info ADD COLUMN qos_limit_time TEXT")
             conn.execute("ALTER TABLE device_info ADD COLUMN qos_duration_minutes INTEGER DEFAULT 0")
+            conn.execute("ALTER TABLE device_info ADD COLUMN qos_is_auto INTEGER DEFAULT 0")
         except sqlite3.OperationalError:
             pass  # 列已存在
         # 设备历史记录表
@@ -220,6 +221,7 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
     qos_inst_id = device_info.get("qos_inst_id") or None
     qos_limit_time = device_info.get("qos_limit_time") or None
     qos_duration_minutes = int(device_info.get("qos_duration_minutes", 0) or 0)
+    qos_is_auto = int(device_info.get("qos_is_auto", 0) or 0)
 
     final_offline = None
     if active == 0:
@@ -272,14 +274,16 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
                     online_duration_sec = ?, offline_duration_sec = ?,
                     latest_bytes_send = ?, latest_bytes_received = ?,
                     qos_enabled = ?, qos_max_upload_kbps = ?, qos_max_download_kbps = ?,
-                    qos_inst_id = ?, qos_limit_time = ?, qos_duration_minutes = ?
+                    qos_inst_id = ?, qos_limit_time = ?, qos_duration_minutes = ?,
+                    qos_is_auto = ?
                 WHERE macaddress = ?
             ''', (devname, ip, now_str, active,
                   sntp_time_str, final_active, final_offline,
                   online_dur, offline_dur,
                   latest_send, latest_recv,
                   qos_enabled, qos_max_up, qos_max_down,
-                  qos_inst_id, qos_limit_time, qos_duration_minutes, mac))
+                  qos_inst_id, qos_limit_time, qos_duration_minutes,
+                  qos_is_auto, mac))
         else:
             conn.execute('''
                 INSERT INTO device_info (
@@ -289,14 +293,15 @@ def upsert_device_info(device_info, active, offline_time_str, active_time_str, s
                     latest_upload_kbps, latest_download_kbps,
                     latest_bytes_send, latest_bytes_received,
                     qos_enabled, qos_max_upload_kbps, qos_max_download_kbps,
-                    qos_inst_id, qos_limit_time, qos_duration_minutes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    qos_inst_id, qos_limit_time, qos_duration_minutes, qos_is_auto
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (devname, ip, mac, now_str, now_str,
                   active, sntp_time_str, final_active, final_offline,
                   online_dur, offline_dur, None, None,
                   latest_send, latest_recv,
                   qos_enabled, qos_max_up, qos_max_down,
-                  qos_inst_id, qos_limit_time, qos_duration_minutes))
+                  qos_inst_id, qos_limit_time, qos_duration_minutes,
+                  qos_is_auto))
 
 
 def update_devices_offline(matched_macs):
@@ -754,7 +759,7 @@ def fetch_and_process():
                                 with sqlite3.connect(DB_FILE) as conn2:
                                     conn2.execute(
                                         "UPDATE device_info SET qos_enabled=0, qos_inst_id=NULL, "
-                                        "qos_limit_time=NULL, qos_duration_minutes=0 WHERE macaddress=?",
+                                        "qos_limit_time=NULL, qos_duration_minutes=0, qos_is_auto=0 WHERE macaddress=?",
                                         (mac,))
                 except Exception as e:
                     log_warning(f"QoS过期检查异常: {mac}, {e}")
@@ -799,14 +804,15 @@ def fetch_and_process():
                     # 查当前 DB 中的 QoS 状态
                     with sqlite3.connect(DB_FILE) as conn:
                         cur = conn.execute(
-                            "SELECT qos_enabled, qos_inst_id, qos_max_upload_kbps, qos_max_download_kbps "
+                            "SELECT qos_enabled, qos_inst_id, qos_max_upload_kbps, qos_max_download_kbps, qos_is_auto "
                             "FROM device_info WHERE macaddress=?", (mac,))
                         row = cur.fetchone()
                     qos_on = bool(row[0]) if row else False
                     inst_id = row[1] if row else None
                     db_up = int(row[2] or 0) if row else 0
                     db_down = int(row[3] or 0) if row else 0
-                    qos_matches_policy = qos_on and db_up == max_up and db_down == max_down
+                    db_is_auto = bool(row[4]) if row else False
+                    qos_matches_policy = qos_on and db_is_auto and db_up == max_up and db_down == max_down
 
                     if in_window and max_up > 0 and max_down > 0 and not qos_matches_policy:
                         # 窗口内 + 速率不一致 → 应用自动限速
@@ -833,7 +839,7 @@ def fetch_and_process():
                                     conn.execute(
                                         "UPDATE device_info SET qos_enabled=1, qos_inst_id=?, "
                                         "qos_max_upload_kbps=?, qos_max_download_kbps=?, "
-                                        "qos_limit_time=?, qos_duration_minutes=? WHERE macaddress=?",
+                                        "qos_limit_time=?, qos_duration_minutes=?, qos_is_auto=1 WHERE macaddress=?",
                                         (inst_id, max_up, max_down, sntp,
                                          calc_remaining_minutes(t_end), mac))
                             log_info(f"自动限速已应用: {name}({mac}) → up={max_up}Kbps down={max_down}Kbps")
@@ -852,7 +858,7 @@ def fetch_and_process():
                                 with sqlite3.connect(DB_FILE) as conn:
                                     conn.execute(
                                         "UPDATE device_info SET qos_enabled=0, qos_inst_id=NULL, "
-                                        "qos_limit_time=NULL, qos_duration_minutes=0 "
+                                        "qos_limit_time=NULL, qos_duration_minutes=0, qos_is_auto=0 "
                                         "WHERE macaddress=?", (mac,))
                             log_info(f"自动限速已解除: {name}({mac})")
                         except Exception as e:
@@ -1046,7 +1052,7 @@ def query_device_info():
         "latest_upload_kbps", "latest_download_kbps",
         "latest_bytes_send", "latest_bytes_received",
         "qos_enabled", "qos_max_upload_kbps", "qos_max_download_kbps",
-        "qos_inst_id", "qos_limit_time", "qos_duration_minutes"
+        "qos_inst_id", "qos_limit_time", "qos_duration_minutes", "qos_is_auto"
     }
     if order_by not in allowed_fields:
         order_by = "last_seen"
@@ -1079,7 +1085,7 @@ def query_device_info():
                latest_upload_kbps, latest_download_kbps,
                latest_bytes_send, latest_bytes_received,
                qos_enabled, qos_max_upload_kbps, qos_max_download_kbps,
-               qos_inst_id, qos_limit_time, qos_duration_minutes
+               qos_inst_id, qos_limit_time, qos_duration_minutes, qos_is_auto
         FROM device_info
         WHERE {where_sql}
         ORDER BY {order_by} {order_dir}
@@ -1097,7 +1103,8 @@ def query_device_info():
             "latest_upload_kbps": row[12], "latest_download_kbps": row[13],
             "latest_bytes_send": row[14], "latest_bytes_received": row[15],
             "qos_enabled": row[16], "qos_max_upload_kbps": row[17], "qos_max_download_kbps": row[18],
-            "qos_inst_id": row[19], "qos_limit_time": row[20], "qos_duration_minutes": row[21]
+            "qos_inst_id": row[19], "qos_limit_time": row[20], "qos_duration_minutes": row[21],
+            "qos_is_auto": row[22]
         })
     return jsonify({"total": total, "page": page, "page_size": page_size, "data": devices})
 
@@ -1333,7 +1340,7 @@ def batch_delete_qos():
                 with sqlite3.connect(DB_FILE) as conn:
                     conn.execute(
                         "UPDATE device_info SET qos_enabled=0, qos_inst_id=NULL, "
-                        "qos_limit_time=NULL, qos_duration_minutes=0 "
+                        "qos_limit_time=NULL, qos_duration_minutes=0, qos_is_auto=0"
                         "WHERE macaddress=?",
                         (mac,))
             success += 1
