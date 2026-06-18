@@ -976,9 +976,10 @@ def query_device_history():
         ORDER BY {order_by} {order_dir}
         LIMIT ? OFFSET ?
     """
-    params.extend([page_size, offset])
     with sqlite3.connect(DB_FILE) as conn:
         total = conn.execute(count_sql, params).fetchone()[0]
+        params.extend([page_size, offset])
+        rows = conn.execute(query_sql, params).fetchall()
         rows = conn.execute(query_sql, params).fetchall()
     columns = ["id", "record_time", "DevName", "IPAddress", "MACAddress",
                "ActiveTime", "InactiveTime", "SNTPTime", "OnlineTimes",
@@ -1089,9 +1090,10 @@ def query_device_info():
         ORDER BY {order_by} {order_dir}
         LIMIT ? OFFSET ?
     """
-    params.extend([page_size, offset])
     with sqlite3.connect(DB_FILE) as conn:
         total = conn.execute(count_sql, params).fetchone()[0]
+        params.extend([page_size, offset])
+        rows = conn.execute(query_sql, params).fetchall()
         rows = conn.execute(query_sql, params).fetchall()
     devices = []
     for row in rows:
