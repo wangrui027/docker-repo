@@ -349,6 +349,7 @@
             <button class="time-btn" data-minutes="60">最近1小时</button>
             <button class="time-btn" data-minutes="360">最近6小时</button>
             <button class="time-btn" data-minutes="1440">最近一天</button>
+            <button id="resetZoomBtn" style="margin-left:8px;background:#ef4444;color:#fff;display:none">↺ 重置缩放</button>
             <label style="margin-left:12px;cursor:pointer;font-size:0.85rem;display:inline-flex;align-items:center;gap:4px;">
                 <input type="checkbox" id="linkChartsCheckbox" checked> 联动图表
             </label>
@@ -397,6 +398,24 @@
         if (!kbps || kbps === 0) return '0 Mbps';
         const mbps = kbps / 1000;  // Kbps → Mbps
         return mbps.toFixed(2) + ' Mbps';
+    }
+
+    // 格式化时间（全局公用）
+    function formatBeijingTime(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    }
+
+    function tooltipSpeedColor(kbps) {
+        if (kbps === undefined || kbps === null) return '#1e293b';
+        if (kbps >= 1024) return '#dc2626';     // ≥1MB/s 红色
+        if (kbps >= 512) return '#f97316';      // ≥512KB/s 橙色
+        return '#1e293b';                        // 默认
     }
 
     function renderQosCell(dev, restricted) {
@@ -740,23 +759,11 @@
     // 曲线图刷新
     async function refreshCharts() {
         if (selectedMacs.size === 0) {
-            uploadChart?.clear();
-            downloadChart?.clear();
-            uploadChart?.setOption({ title: { text: '未勾选任何设备', left: 'center', top: 'center' } });
-            downloadChart?.setOption({ title: { text: '未勾选任何设备', left: 'center', top: 'center' } });
+            uploadChart?.setOption({ series: [], title: { text: '未勾选任何设备', left: 'center', top: 'center' } }, { replaceMerge: ['series'] });
+            downloadChart?.setOption({ series: [], title: { text: '未勾选任何设备', left: 'center', top: 'center' } }, { replaceMerge: ['series'] });
             return;
         }
         const macsArray = Array.from(selectedMacs);
-
-        function formatBeijingTime(date) {
-            const year = date.getFullYear();
-            const month = String(date.getMonth() + 1).padStart(2, '0');
-            const day = String(date.getDate()).padStart(2, '0');
-            const hours = String(date.getHours()).padStart(2, '0');
-            const minutes = String(date.getMinutes()).padStart(2, '0');
-            const seconds = String(date.getSeconds()).padStart(2, '0');
-            return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-        }
 
         const endDate = new Date();
         const endTime = formatBeijingTime(endDate);
@@ -802,63 +809,26 @@
             }
 
             if (uploadSeries.length === 0 && downloadSeries.length === 0) {
-                uploadChart?.setOption({ title: { text: '所选时间段内无速率数据', left: 'center', top: 'center' } });
-                downloadChart?.setOption({ title: { text: '所选时间段内无速率数据', left: 'center', top: 'center' } });
+                uploadChart?.setOption({ series: [], title: { text: '所选时间段内无速率数据', left: 'center', top: 'center' } }, { replaceMerge: ['series'] });
+                downloadChart?.setOption({ series: [], title: { text: '所选时间段内无速率数据', left: 'center', top: 'center' } }, { replaceMerge: ['series'] });
                 return;
             }
-
-            const tooltipSpeedColor = function(kbps) {
-                if (kbps === undefined || kbps === null) return '#1e293b';
-                if (kbps >= 1024) return '#dc2626';     // ≥1MB/s 红色
-                if (kbps >= 512) return '#f97316';      // ≥512KB/s 橙色
-                return '#1e293b';                        // 默认
-            };
-
-            const commonOption = {
-                tooltip: {
-                    trigger: 'axis',
-                    formatter: function(params) {
-                        if (!params || params.length === 0) return '';
-                        const timeLabel = formatBeijingTime(new Date(params[0].axisValue));
-                        let html = '<div style="margin-bottom:4px">' + timeLabel + '</div>';
-                        for (let i = 0; i < params.length; i++) {
-                            const p = params[i];
-                            const kbps = p.value[1];
-                            const color = tooltipSpeedColor(kbps);
-                            const val = formatSpeed(kbps);
-                            html += '<div style="display:flex;align-items:center;min-width:220px">'
-                                + p.marker
-                                + '<span>' + p.seriesName + '</span>'
-                                + '<span style="flex:1"></span>'
-                                + '<span style="font-weight:600;color:' + color + '">' + val + '</span>'
-                                + '</div>';
-                        }
-                        return html;
-                    }
-                },
-                xAxis: { type: 'time', name: '时间', axisLabel: { rotate: 30 } },
-                yAxis: { type: 'value', name: '速率 (KB/s)' },
-                legend: { orient: 'vertical', left: 'left', top: 'middle' },
-                grid:  { containLabel: true, top: 40, bottom: 20, left: 60, right: 60 }
-            };
 
             const uploadNames = uploadSeries.map(s => s.name);
             const uploadSelected = getLegendSelected('upload', uploadNames);
             uploadChart.setOption({
-                ...commonOption,
                 title: { text: '上\n传\n速\n率', left: 15, top: 'middle' },
                 series: uploadSeries,
                 legend: { data: uploadNames, selected: uploadSelected }
-            }, true);
+            }, { replaceMerge: ['series', 'legend'] });
 
             const downloadNames = downloadSeries.map(s => s.name);
             const downloadSelected = getLegendSelected('download', downloadNames);
             downloadChart.setOption({
-                ...commonOption,
                 title: { text: '下\n载\n速\n率', left: 15, top: 'middle' },
                 series: downloadSeries,
                 legend: { data: downloadNames, selected: downloadSelected }
-            }, true);
+            }, { replaceMerge: ['series', 'legend'] });
 
             // 根据联动开关状态 connect 或 disconnect
             if (chartLinked) {
@@ -869,8 +839,8 @@
 
         } catch (err) {
             console.error('刷新曲线失败', err);
-            uploadChart?.setOption({ title: { text: '加载曲线数据失败', left: 'center', top: 'center' } });
-            downloadChart?.setOption({ title: { text: '加载曲线数据失败', left: 'center', top: 'center' } });
+            uploadChart?.setOption({ series: [], title: { text: '加载曲线数据失败', left: 'center', top: 'center' } }, { replaceMerge: ['series'] });
+            downloadChart?.setOption({ series: [], title: { text: '加载曲线数据失败', left: 'center', top: 'center' } }, { replaceMerge: ['series'] });
         }
     }
 
@@ -951,6 +921,66 @@
         uploadChart = echarts.init(document.getElementById('uploadChart'));
         downloadChart = echarts.init(document.getElementById('downloadChart'));
 
+        // 初始图表配置（只需设置一次，后续 refreshCharts 只更新系列数据）
+        const baseOpt = {
+            tooltip: {
+                trigger: 'axis',
+                formatter: function(params) {
+                    if (!params || params.length === 0) return '';
+                    const timeLabel = formatBeijingTime(new Date(params[0].axisValue));
+                    let html = '<div style="margin-bottom:4px">' + timeLabel + '</div>';
+                    for (let i = 0; i < params.length; i++) {
+                        const p = params[i];
+                        const kbps = p.value[1];
+                        const color = tooltipSpeedColor(kbps);
+                        const val = formatSpeed(kbps);
+                        html += '<div style="display:flex;align-items:center;min-width:220px">'
+                            + p.marker
+                            + '<span>' + p.seriesName + '</span>'
+                            + '<span style="flex:1"></span>'
+                            + '<span style="font-weight:600;color:' + color + '">' + val + '</span>'
+                            + '</div>';
+                    }
+                    return html;
+                }
+            },
+            xAxis: { type: 'time', name: '时间', axisLabel: { rotate: 30 } },
+            yAxis: { type: 'value', name: '速率 (KB/s)' },
+            legend: { orient: 'vertical', left: 'left', top: 'middle' },
+            grid: { containLabel: true, top: 40, bottom: 50, left: 60, right: 60 },
+            dataZoom: [
+                {
+                    type: 'slider',
+                    xAxisIndex: 0,
+                    bottom: 10,
+                    height: 22,
+                    borderColor: '#ccc',
+                    fillerColor: 'rgba(79,70,229,0.15)',
+                    borderSize: 0,
+                    filterMode: 'none',
+                    labelFormatter: function (value) {
+                        return formatBeijingTime(new Date(value)).slice(5, 16);
+                    }
+                },
+                {
+                    type: 'inside',
+                    xAxisIndex: 0,
+                    zoomOnMouseWheel: true,
+                    moveOnMouseMove: true
+                }
+            ]
+        };
+        uploadChart.setOption({
+            ...baseOpt,
+            title: { text: '上\n传\n速\n率', left: 15, top: 'middle' },
+            series: []
+        });
+        downloadChart.setOption({
+            ...baseOpt,
+            title: { text: '下\n载\n速\n率', left: 15, top: 'middle' },
+            series: []
+        });
+
         // 设置 group，用于 connect/disconnect 联动控制
         uploadChart.group = 'speedGroup';
         downloadChart.group = 'speedGroup';
@@ -982,6 +1012,14 @@
         });
 
         window.addEventListener('resize', () => { uploadChart?.resize(); downloadChart?.resize(); });
+
+        // dataZoom 拖拽/滚动时显示重置按钮
+        function onDataZoom() {
+            const btn = document.getElementById('resetZoomBtn');
+            if (btn) btn.style.display = 'inline-block';
+        }
+        uploadChart.on('dataZoom', onDataZoom);
+        downloadChart.on('dataZoom', onDataZoom);
     }
 
     function saveLegendState(chartKey, selectedMap) {
@@ -1092,9 +1130,19 @@
         bindTimeSelector();
         bindLinkChartsCheckbox();
         bindSelectAllCheckbox();
+        document.getElementById('resetZoomBtn').addEventListener('click', resetZoom);
         startTickTimer();
         await startAutoRefresh();
     });
+
+    // ---------- 重置 dataZoom 缩放 ----------
+    function resetZoom() {
+        document.getElementById('resetZoomBtn').style.display = 'none';
+        [uploadChart, downloadChart].forEach(chart => {
+            if (!chart) return;
+            chart.dispatchAction({ type: 'dataZoom', start: 0, end: 100 });
+        });
+    }
 
     // ---------- QoS 限速弹窗 ----------
     let qosModalMac = '';
