@@ -966,8 +966,6 @@ def query_device_history():
             params.append(f"%{value}%")
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
     count_sql = f"SELECT COUNT(*) FROM device_history WHERE {where_sql}"
-    with sqlite3.connect(DB_FILE) as conn:
-        total = conn.execute(count_sql, params).fetchone()[0]
     offset = (page - 1) * page_size
     query_sql = f"""
         SELECT id, record_time, DevName, IPAddress, MACAddress,
@@ -979,7 +977,9 @@ def query_device_history():
         LIMIT ? OFFSET ?
     """
     params.extend([page_size, offset])
-    rows = conn.execute(query_sql, params).fetchall()
+    with sqlite3.connect(DB_FILE) as conn:
+        total = conn.execute(count_sql, params).fetchone()[0]
+        rows = conn.execute(query_sql, params).fetchall()
     columns = ["id", "record_time", "DevName", "IPAddress", "MACAddress",
                "ActiveTime", "InactiveTime", "SNTPTime", "OnlineTimes",
                "BytesSend", "BytesReceived", "UsbandWidth", "DsbandWidth"]
@@ -1075,8 +1075,6 @@ def query_device_info():
             params.append(f"%{value}%")
     where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
     count_sql = f"SELECT COUNT(*) FROM device_info WHERE {where_sql}"
-    with sqlite3.connect(DB_FILE) as conn:
-        total = conn.execute(count_sql, params).fetchone()[0]
     offset = (page - 1) * page_size
     query_sql = f"""
         SELECT id, devname, ipaddress, macaddress, first_seen, last_seen,
@@ -1092,7 +1090,9 @@ def query_device_info():
         LIMIT ? OFFSET ?
     """
     params.extend([page_size, offset])
-    rows = conn.execute(query_sql, params).fetchall()
+    with sqlite3.connect(DB_FILE) as conn:
+        total = conn.execute(count_sql, params).fetchone()[0]
+        rows = conn.execute(query_sql, params).fetchall()
     devices = []
     for row in rows:
         devices.append({
@@ -1230,7 +1230,8 @@ def set_qos_limit():
                         UPDATE device_info
                         SET qos_enabled = 1,
                             qos_max_upload_kbps = ?, qos_max_download_kbps = ?,
-                            qos_inst_id = ?, qos_limit_time = ?, qos_duration_minutes = ?
+                            qos_inst_id = ?, qos_limit_time = ?, qos_duration_minutes = ?,
+                            qos_is_auto = 0
                         WHERE macaddress = ?
                     ''', (max_upload_kbps, max_download_kbps,
                           real_inst_id, limit_time, duration_minutes, mac))
@@ -1267,7 +1268,7 @@ def set_qos_limit():
                         UPDATE device_info
                         SET qos_enabled = 0,
                             qos_inst_id = NULL, qos_limit_time = NULL,
-                            qos_duration_minutes = 0
+                            qos_duration_minutes = 0, qos_is_auto = 0
                         WHERE macaddress = ?
                     ''', (mac,))
 
@@ -1340,7 +1341,7 @@ def batch_delete_qos():
                 with sqlite3.connect(DB_FILE) as conn:
                     conn.execute(
                         "UPDATE device_info SET qos_enabled=0, qos_inst_id=NULL, "
-                        "qos_limit_time=NULL, qos_duration_minutes=0, qos_is_auto=0"
+                        "qos_limit_time=NULL, qos_duration_minutes=0, qos_is_auto=0 "
                         "WHERE macaddress=?",
                         (mac,))
             success += 1
