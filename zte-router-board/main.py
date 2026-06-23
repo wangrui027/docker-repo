@@ -39,7 +39,6 @@ KEEP_FIELDS = [
 ]
 
 VALID_CACHE_SECONDS = 30  # 相同Cookie跳过验证的缓存时长（秒）
-LOG_LEVEL = "INFO"  # "DEBUG" 显示详细采集计时, "INFO" 只显示关键日志, "WARNING" 只显示警告
 
 # ===== 数据库配置 =====
 DB_FILE = "data/data.db"

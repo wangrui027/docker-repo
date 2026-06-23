@@ -52,3 +52,6 @@ AUTO_QOS_SCHEDULES = [
 
 # ========== 数据保留天数 ==========
 DATA_RETENTION_DAYS = 7
+
+# "DEBUG" 显示详细采集计时, "INFO" 只显示关键日志, "WARNING" 只显示警告
+LOG_LEVEL = "DEBUG"
