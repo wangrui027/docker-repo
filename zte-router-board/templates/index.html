@@ -756,7 +756,7 @@
         });
     }
 
-    // 曲线图刷新
+    // 曲线图刷新（全量拉取 + ECharts 按 id 匹配数据点，自动平滑过渡）
     async function refreshCharts() {
         if (selectedMacs.size === 0) {
             uploadChart?.setOption({ series: [], title: { text: '未勾选任何设备', left: 'center', top: 'center' } }, { replaceMerge: ['series'] });
@@ -787,8 +787,9 @@
                 const dev = allDevices.find(d => d.mac === mac);
                 const deviceName = dev ? dev.devname : mac.slice(-6);
                 const sortedPoints = [...points].sort((a,b) => a.sntp_time.localeCompare(b.sntp_time));
-                const uploadData = sortedPoints.map(p => [p.sntp_time, p.upload_kbps]);
-                const downloadData = sortedPoints.map(p => [p.sntp_time, p.download_kbps]);
+                // 用 sntp_time 作 id，ECharts 按 id 匹配新旧数据点 → 已有点不动，新增点淡入
+                const uploadData = sortedPoints.map(p => ({ value: [p.sntp_time, p.upload_kbps], id: p.sntp_time }));
+                const downloadData = sortedPoints.map(p => ({ value: [p.sntp_time, p.download_kbps], id: p.sntp_time }));
 
                 uploadSeries.push({
                     name: deviceName,
@@ -922,7 +923,10 @@
         downloadChart = echarts.init(document.getElementById('downloadChart'));
 
         // 初始图表配置（只需设置一次，后续 refreshCharts 只更新系列数据）
+        // animationDuration=0 禁止首绘动画，animationDurationUpdate=200 增量更新时平滑衔接
         const baseOpt = {
+            animationDuration: 0,
+            animationDurationUpdate: 200,
             tooltip: {
                 trigger: 'axis',
                 formatter: function(params) {
