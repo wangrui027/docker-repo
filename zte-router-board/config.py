@@ -1,8 +1,6 @@
 # config.py
 # ========== 路由器连接配置 ==========
-ROUTER_BASE = "http://zte.home"
-# 优先从环境变量取密码，否则使用硬编码（建议设置环境变量）
-PASSWORD = "U9wH$A9PY374s@CA"
+ROUTER_BASE = "https://router.java-jar.fun:2280"
 
 # ========== 设备匹配列表 ==========
 PRESET_MATCH_LIST = [
@@ -59,5 +57,5 @@ LOG_LEVEL = "INFO"
 # ========== WxPusher 通知配置 ==========
 # 用于数据采集停滞告警推送
 WXPUSHER_URL = "http://wxpusher.zjiecode.com/api/send/message"
-WXPUSHER_APP_TOKEN = "xxxxx"
-WXPUSHER_UIDS = ["xxxxx"]
+WXPUSHER_APP_TOKEN = "xxxxxx"
+WXPUSHER_UIDS = ["xxxxxx"]

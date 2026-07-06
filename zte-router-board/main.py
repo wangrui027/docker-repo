@@ -1,7 +1,3 @@
-import hashlib
-import json
-import os
-import pickle
 import sqlite3
 import threading
 import time
@@ -17,8 +13,6 @@ from flask import Flask, request, jsonify, render_template
 from config import *
 
 # ==================== 配置 ====================
-SESSION_FILE = "router_self_session.pkl"
-
 # 属性筛选列表：用于控制最终 JSON 中保存哪些字段。
 # - 如果列表为空（[]），则保存设备的所有字段（完整信息）。
 # - 如果列表非空，则只保存列表中指定的字段名。
@@ -42,8 +36,10 @@ VALID_CACHE_SECONDS = 30  # 相同Cookie跳过验证的缓存时长（秒）
 
 # ===== 数据库配置 =====
 DB_FILE = "data/data.db"
+PLUGIN_COOKIE_FILE = "data/router_plugin_cookie.txt"  # 插件 Cookie 持久化文件
 db_lock = threading.Lock()  # 数据库写入锁
 qos_deleting_set = set()  # 正在解除限速的设备 MAC 集合（内存标记）
+
 
 # =====================
 
@@ -208,7 +204,8 @@ def normalize_sntp_time(sntp_str):
     return sntp_str.replace('T', ' ')
 
 
-def upsert_device_info(device_info, active, offline_time_str, active_time_str, sntp_time_str, latest_send, latest_recv, _conn=None):
+def upsert_device_info(device_info, active, offline_time_str, active_time_str, sntp_time_str, latest_send, latest_recv,
+                       _conn=None):
     """
     插入或更新设备信息表（基于 MAC 地址），同时更新最新流量累计值
     _conn: 复用上层连接，避免双连接争文件锁
@@ -363,7 +360,8 @@ def insert_device_record(device_info, _conn=None):
         conn = sqlite3.connect(DB_FILE)
         _close_conn = True
     try:
-        upsert_device_info(device_info, active, inactive_time, active_time, sntp_time, bytes_send, bytes_recv, _conn=conn)
+        upsert_device_info(device_info, active, inactive_time, active_time, sntp_time, bytes_send, bytes_recv,
+                           _conn=conn)
 
         cursor = conn.execute('''
             INSERT INTO device_history (
@@ -495,8 +493,8 @@ def send_wxpusher_notification(message):
 
 # ========== 数据采集停滞检测 ==========
 _last_stall_notification_time = 0.0
-STALL_CHECK_INTERVAL = 5        # 每次查询间隔（秒）
-STALL_CHECK_COUNT = 5           # 连续查询次数
+STALL_CHECK_INTERVAL = 5  # 每次查询间隔（秒）
+STALL_CHECK_COUNT = 5  # 连续查询次数
 STALL_NOTIFICATION_COOLDOWN = 3600  # 通知冷却时间（秒）
 
 
@@ -507,7 +505,11 @@ def check_data_collection_stalled():
     """
     global _last_stall_notification_time
 
-    log_info("[StallCheck] 开始检测数据采集状态...")
+    if not plugin_cookie:
+        log_debug("[StallCheck] 无插件Cookie，跳过停滞检测")
+        return
+
+    log_debug("[StallCheck] 开始检测数据采集状态...")
     last_id = None
     all_same = True
     last_record_time = None
@@ -523,14 +525,14 @@ def check_data_collection_stalled():
 
         current_id = row[0] if row else None
         current_time = row[1] if row else None
-        log_info(f"[StallCheck] 第{i + 1}次查询: id={current_id}, SNTPTime={current_time}")
+        log_debug(f"[StallCheck] 第{i + 1}次查询: id={current_id}, SNTPTime={current_time}")
 
         if i == 0:
             last_id = current_id
             last_record_time = current_time
         elif current_id != last_id:
             all_same = False
-            log_info("[StallCheck] 检测到新数据，采集正常")
+            log_debug("[StallCheck] 检测到新数据，采集正常")
             break
 
         if i < STALL_CHECK_COUNT - 1:
@@ -558,8 +560,6 @@ def check_data_collection_stalled():
 
 # 全局变量
 plugin_cookie = None
-self_session = None
-self_cookie_valid = False
 invalid_cookies = set()
 last_valid_cookie = None
 last_valid_time = 0
@@ -584,49 +584,6 @@ def parse_cookie_string(cookie_str):
     return cookies
 
 
-def save_self_session(session):
-    with open(SESSION_FILE, "wb") as f:
-        pickle.dump(session.cookies, f)
-
-
-def load_self_session():
-    if Path(SESSION_FILE).exists():
-        session = requests.Session()
-        with open(SESSION_FILE, "rb") as f:
-            cookies = pickle.load(f)
-            session.cookies.update(cookies)
-        return session
-    return None
-
-
-def self_login():
-    log_info("执行自主登录...")
-    session = requests.Session()
-    session.get(f"{ROUTER_BASE}/")
-    resp = session.get(f"{ROUTER_BASE}/?_type=loginsceneData&_tag=login_token_json")
-    data = resp.json()
-    logintoken = data["logintoken"]
-    session_token = data["_sessionToken"]
-    password_hash = hashlib.sha256((PASSWORD + logintoken).encode()).hexdigest()
-    payload = {
-        "Username": "admin",
-        "Password": password_hash,
-        "action": "login",
-        "Frm_Logintoken": "",
-        "captchaCode": "",
-        "_sessionTOKEN": session_token
-    }
-    resp = session.post(f"{ROUTER_BASE}/?_type=loginData&_tag=login_entry", data=payload)
-    if resp.status_code != 200:
-        raise Exception("自主登录失败，HTTP状态码: " + str(resp.status_code))
-    resp_text = resp.text[:200]
-    log_info(f"登录响应: {resp_text}")
-    if "login_failed" in resp_text or "密码" in resp_text:
-        raise Exception("自主登录失败，可能密码错误或路由器拒绝登录")
-    save_self_session(session)
-    return session
-
-
 def check_session_valid(session):
     try:
         timestamp = int(time.time() * 1000)
@@ -646,6 +603,36 @@ def validate_cookie_string(cookie_str):
         return False
 
 
+def save_plugin_cookie(cookie_str):
+    """将插件 Cookie 写入文件持久化"""
+    try:
+        Path(PLUGIN_COOKIE_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with open(PLUGIN_COOKIE_FILE, "w", encoding="utf-8") as f:
+            f.write(cookie_str)
+    except Exception as e:
+        log_warning(f"保存插件Cookie文件失败: {e}")
+
+
+def load_plugin_cookie():
+    """从文件加载插件 Cookie，文件不存在或读取失败时返回 None"""
+    try:
+        if Path(PLUGIN_COOKIE_FILE).exists():
+            with open(PLUGIN_COOKIE_FILE, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+                return content if content else None
+    except:
+        pass
+    return None
+
+
+def delete_plugin_cookie():
+    """删除插件 Cookie 文件"""
+    try:
+        Path(PLUGIN_COOKIE_FILE).unlink(missing_ok=True)
+    except:
+        pass
+
+
 def reset_valid_cache():
     global last_valid_cookie, last_valid_time
     last_valid_cookie = None
@@ -654,11 +641,12 @@ def reset_valid_cache():
 
 def get_effective_cookie_and_session(skip_validate=True):
     """
-    获取路由器会话。
+    获取路由器会话，仅依赖插件 Cookie。
+    优先使用内存中的 Cookie，无有效 Cookie 时尝试从文件加载。
     skip_validate=True（默认）：跳过 session 有效性验证 GET，省 0.5s。
-    如果 session 已过期，后续数据请求会失败，触发重新登录。
+    无有效 Cookie 时返回 (None, None)。
     """
-    global plugin_cookie, self_session, self_cookie_valid, last_valid_cookie, last_valid_time
+    global plugin_cookie, last_valid_cookie, last_valid_time
     with lock:
         if plugin_cookie and plugin_cookie not in invalid_cookies:
             session = requests.Session()
@@ -669,28 +657,25 @@ def get_effective_cookie_and_session(skip_validate=True):
                 log_warning("插件Cookie失效，已清除")
                 invalid_cookies.add(plugin_cookie)
                 plugin_cookie = None
+                delete_plugin_cookie()
                 reset_valid_cache()
-        if self_session is None:
-            self_session = load_self_session()
-        if self_session:
-            if skip_validate or check_session_valid(self_session):
-                self_cookie_valid = True
-                return self_session, 'self'
-            else:
-                log_warning("持久化Session失效")
-                self_session = None
-                self_cookie_valid = False
-                reset_valid_cache()
-        log_warning("所有Cookie失效，执行自主登录...")
-        new_session = self_login()
-        if not check_session_valid(new_session):
-            log_warning("登录后Session仍无效，等待3秒后重试")
-            time.sleep(3)
-            new_session = self_login()
-        self_session = new_session
-        self_cookie_valid = True
-        reset_valid_cache()
-        return new_session, 'new_login'
+        # 内存无 Cookie，尝试从文件加载
+        if not plugin_cookie:
+            file_cookie = load_plugin_cookie()
+            if file_cookie and file_cookie not in invalid_cookies:
+                plugin_cookie = file_cookie
+                session = requests.Session()
+                session.cookies.update(parse_cookie_string(plugin_cookie))
+                if skip_validate or check_session_valid(session):
+                    log_info("从文件加载插件Cookie成功")
+                    return session, 'plugin'
+                else:
+                    log_warning("文件Cookie失效，已清除")
+                    invalid_cookies.add(plugin_cookie)
+                    plugin_cookie = None
+                    delete_plugin_cookie()
+                    reset_valid_cache()
+        return None, None
 
 
 # ---------- 自动分时限速辅助函数 ----------
@@ -739,6 +724,9 @@ def fetch_and_process():
     _t1 = _t2 = _t3 = _t4 = _t5 = _t6 = _fetch_start
     try:
         session, source = get_effective_cookie_and_session()
+        if session is None:
+            log_info("无有效Cookie，跳过本次采集")
+            return
         if source != last_used_source:
             log_warning(f"会话切换为 {source}")
             last_used_source = source
@@ -756,17 +744,17 @@ def fetch_and_process():
         try:
             root = ET.fromstring(xml_content)
         except ET.ParseError:
-            log_warning("XML 解析失败，清除过期 session 并重新登录重试...")
+            log_warning("XML解析失败，插件Cookie已过期，清除等待新Cookie...")
             with lock:
-                if source == 'plugin' and plugin_cookie:
+                if plugin_cookie:
                     invalid_cookies.add(plugin_cookie)
                     plugin_cookie = None
-                elif source in ('self', 'new_login'):
-                    self_session = None
-                    self_cookie_valid = False
+                    delete_plugin_cookie()
                 reset_valid_cache()
             session, source = get_effective_cookie_and_session()
-            url2 = f"{ROUTER_BASE}/?_type=vueData&_tag=localnet_lan_info_lua&_={int(time.time()*1000)}"
+            if session is None:
+                return
+            url2 = f"{ROUTER_BASE}/?_type=vueData&_tag=localnet_lan_info_lua&_={int(time.time() * 1000)}"
             response = session.get(url2, timeout=10)
             xml_content = response.text
             root = ET.fromstring(xml_content)  # 再失败直接抛异常
@@ -943,20 +931,20 @@ def fetch_and_process():
                     if not match_auto_qos_device(name, ip, mac, devices_list):
                         continue
 
-                    # 查当前 DB 中的 QoS 状态
+                    # 查 DB 中已有 inst_id（用于 Apply/Delete 操作）
                     with sqlite3.connect(DB_FILE) as conn:
                         cur = conn.execute(
-                            "SELECT qos_enabled, qos_inst_id, qos_max_upload_kbps, qos_max_download_kbps, qos_is_auto "
-                            "FROM device_info WHERE macaddress=?", (mac,))
+                            "SELECT qos_inst_id FROM device_info WHERE macaddress=?", (mac,))
                         row = cur.fetchone()
-                    qos_on = bool(row[0]) if row else False
-                    inst_id = row[1] if row else None
-                    db_up = int(row[2] or 0) if row else 0
-                    db_down = int(row[3] or 0) if row else 0
-                    db_is_auto = bool(row[4]) if row else False
-                    qos_matches_policy = qos_on and db_is_auto and db_up == max_up and db_down == max_down
+                    inst_id = row[0] if row else None
 
-                    if in_window and max_up > 0 and max_down > 0 and not qos_matches_policy:
+                    # 判断路由器当前 QoS 状态：以实际 XML 数据为准
+                    in_qos_map = mac in qos_map
+                    xml_up = qos_map[mac]["qos_max_upload_kbps"] if in_qos_map else 0
+                    xml_down = qos_map[mac]["qos_max_download_kbps"] if in_qos_map else 0
+                    already_limited = in_qos_map and xml_up == max_up and xml_down == max_down
+
+                    if in_window and max_up > 0 and max_down > 0 and not already_limited:
                         # 窗口内 + 速率不一致 → 应用自动限速
                         try:
                             token = get_session_token(session)  # 复用 fetch_and_process 已获取的 session
@@ -988,8 +976,8 @@ def fetch_and_process():
                         except Exception as e:
                             log_warning(f"自动限速失败: {name}({mac}), {e}")
 
-                    elif not in_window and qos_matches_policy:
-                        # 窗口外 + 速率匹配自动策略 → 解除自动限速
+                    elif not in_window and already_limited:
+                        # 窗口外 + 路由器已有限速 → 解除自动限速
                         try:
                             if inst_id:
                                 token = get_session_token(session)  # 复用已获取的 session
@@ -1017,14 +1005,15 @@ def fetch_and_process():
         log_warning(f"采集失败: {e}")
     finally:
         _elapsed = time.time() - _fetch_start
-        log_debug(f"  └─ 合计: {_elapsed:.1f}s (HTTP={_t2-_t1:.1f}s, 解析={_t4-_t3:.1f}s, DB={_t5-_t4:.1f}s, QoS={_t6-_t5:.1f}s)")
+        log_debug(
+            f"  └─ 合计: {_elapsed:.1f}s (HTTP={_t2 - _t1:.1f}s, 解析={_t4 - _t3:.1f}s, DB={_t5 - _t4:.1f}s, QoS={_t6 - _t5:.1f}s)")
         task_lock.release()
 
 
 @app.route('/')
 def dashboard():
     return render_template('index.html', fetch_interval=FETCH_INTERVAL_SECONDS,
-                          qos_restricted_ips=QOS_RESTRICTED_IPS)
+                           qos_restricted_ips=QOS_RESTRICTED_IPS)
 
 
 # ---------- HTTP 服务接口 ----------
@@ -1049,6 +1038,7 @@ def update_cookie():
         with lock:
             if plugin_cookie != cookie_str:
                 plugin_cookie = cookie_str
+                save_plugin_cookie(cookie_str)
                 log_info(f"[{client_ip}] 插件Cookie已同步（缓存命中）")
         return jsonify({"status": "ok", "cached": True})
     if not task_lock.acquire(timeout=10):
@@ -1060,6 +1050,7 @@ def update_cookie():
         if is_valid:
             with lock:
                 plugin_cookie = cookie_str
+                save_plugin_cookie(cookie_str)
                 if cookie_str in invalid_cookies:
                     invalid_cookies.discard(cookie_str)
                 last_valid_cookie = cookie_str
@@ -1070,6 +1061,7 @@ def update_cookie():
                 invalid_cookies.add(cookie_str)
                 if plugin_cookie == cookie_str:
                     plugin_cookie = None
+                    delete_plugin_cookie()
                 reset_valid_cache()
             log_warning(f"[{client_ip}] 插件Cookie无效，已加入黑名单")
         return jsonify({"status": "ok" if is_valid else "invalid"})
@@ -1296,8 +1288,6 @@ def qos_api_post(session, form_data):
     return resp.text
 
 
-
-
 # ===== QoS 限速设置接口 =====
 @app.route('/api/qos-limit', methods=['POST'])
 def set_qos_limit():
@@ -1322,6 +1312,8 @@ def set_qos_limit():
 
     try:
         session, _ = get_effective_cookie_and_session()
+        if session is None:
+            return jsonify({"status": "error", "message": "无有效Cookie，请先通过浏览器扩展提交Cookie"}), 401
         session_token = get_session_token(session)
 
         if enabled:
@@ -1353,7 +1345,8 @@ def set_qos_limit():
             except Exception:
                 real_inst_id = existing_inst_id
 
-            log_info(f"[{client_ip}] QoS Apply: MAC={mac}, up={max_upload_kbps}Kbps, down={max_download_kbps}Kbps, instID={real_inst_id}")
+            log_info(
+                f"[{client_ip}] QoS Apply: MAC={mac}, up={max_upload_kbps}Kbps, down={max_download_kbps}Kbps, instID={real_inst_id}")
 
             # 获取设备当前 SNTPTime 作为限速时刻
             timestamp = int(time.time() * 1000)
@@ -1466,12 +1459,11 @@ def batch_delete_qos():
     for mac, _ in mac_list:
         qos_deleting_set.add(mac)
 
-    try:
-        session, _ = get_effective_cookie_and_session()
-    except Exception as e:
+    session, _ = get_effective_cookie_and_session()
+    if session is None:
         for mac, _ in mac_list:
             qos_deleting_set.discard(mac)
-        return jsonify({"status": "error", "message": f"登录失败: {e}"}), 500
+        return jsonify({"status": "error", "message": "无有效Cookie，请先通过浏览器扩展提交Cookie"}), 401
 
     success = 0
     failed = 0
@@ -1518,16 +1510,21 @@ def run_schedule():
 if __name__ == '__main__':
     # 关闭 Flask / Werkzeug 的 access 日志
     import logging
+
     logging.getLogger('werkzeug').setLevel(logging.WARNING)
 
     init_db()
     fetch_and_process()
     threading.Thread(target=run_schedule, daemon=True).start()
+
+
     # 数据清理仍用 schedule（每天一次，单独线程运行）
     def run_cleanup():
         while True:
             schedule.run_pending()
             time.sleep(60)  # 每分钟检查一次即可
+
+
     schedule.every().day.at("02:00").do(cleanup_old_data)
     check_data_collection_stalled()  # 启动后立即执行一次
     schedule.every(5).minutes.do(check_data_collection_stalled)
