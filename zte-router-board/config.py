@@ -41,10 +41,10 @@ QOS_RESTRICTED_IPS = [
 # max_upload_mbps / max_download_mbps: 限速速率（Mbps）
 AUTO_QOS_SCHEDULES = [
     {
-        "days": [6,7],
-        "time_start": "01:00",
+        "days": [1,2,3,4,5,6,7],
+        "time_start": "20:30",
         "time_end": "09:30",
-        "devices": ["X96_X6", "小度青禾学习手机", "红米K30S", "OPPO Reno3 Pro"],
+        "devices": ["X96_X6"],
         "max_upload_mbps": 0.01,
         "max_download_mbps": 0.01,
     },
@@ -54,4 +54,10 @@ AUTO_QOS_SCHEDULES = [
 DATA_RETENTION_DAYS = 7
 
 # "DEBUG" 显示详细采集计时, "INFO" 只显示关键日志, "WARNING" 只显示警告
-LOG_LEVEL = "DEBUG"
+LOG_LEVEL = "INFO"
+
+# ========== WxPusher 通知配置 ==========
+# 用于数据采集停滞告警推送
+WXPUSHER_URL = "http://wxpusher.zjiecode.com/api/send/message"
+WXPUSHER_APP_TOKEN = "xxxxx"
+WXPUSHER_UIDS = ["xxxxx"]

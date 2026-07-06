@@ -476,6 +476,84 @@ def cleanup_old_data():
                     f"清理过期数据: 删除历史记录 {deleted_history} 条，速率记录 {deleted_speed} 条 (保留最近 {DATA_RETENTION_DAYS} 天)")
 
 
+# ========== WxPusher 通知 ==========
+def send_wxpusher_notification(message):
+    """发送 WxPusher 通知"""
+    try:
+        payload = {
+            "appToken": WXPUSHER_APP_TOKEN,
+            "content": message,
+            "summary": "📡【网络设备看板】数据采集异常",
+            "contentType": 1,
+            "uids": WXPUSHER_UIDS,
+        }
+        resp = requests.post(WXPUSHER_URL, json=payload, timeout=10)
+        log_info(f"[WxPusher] 通知发送结果: HTTP {resp.status_code}")
+    except Exception as e:
+        log_warning(f"[WxPusher] 通知发送失败: {e}")
+
+
+# ========== 数据采集停滞检测 ==========
+_last_stall_notification_time = 0.0
+STALL_CHECK_INTERVAL = 5        # 每次查询间隔（秒）
+STALL_CHECK_COUNT = 5           # 连续查询次数
+STALL_NOTIFICATION_COOLDOWN = 3600  # 通知冷却时间（秒）
+
+
+def check_data_collection_stalled():
+    """
+    每5分钟执行一次：连续5次（每次间隔5秒）查询 device_history 最新记录，
+    若始终相同则说明数据采集停滞，发送 WxPusher 告警（每小时最多一次）
+    """
+    global _last_stall_notification_time
+
+    log_info("[StallCheck] 开始检测数据采集状态...")
+    last_id = None
+    all_same = True
+    last_record_time = None
+
+    for i in range(STALL_CHECK_COUNT):
+        row = None
+        with db_lock:
+            with sqlite3.connect(DB_FILE) as conn:
+                cursor = conn.execute(
+                    "SELECT id, SNTPTime FROM device_history ORDER BY SNTPTime DESC, id DESC LIMIT 1"
+                )
+                row = cursor.fetchone()
+
+        current_id = row[0] if row else None
+        current_time = row[1] if row else None
+        log_info(f"[StallCheck] 第{i + 1}次查询: id={current_id}, SNTPTime={current_time}")
+
+        if i == 0:
+            last_id = current_id
+            last_record_time = current_time
+        elif current_id != last_id:
+            all_same = False
+            log_info("[StallCheck] 检测到新数据，采集正常")
+            break
+
+        if i < STALL_CHECK_COUNT - 1:
+            time.sleep(STALL_CHECK_INTERVAL)
+
+    # 表为空（last_id is None）时不触发通知
+    if all_same and last_id is not None:
+        now = time.time()
+        if now - _last_stall_notification_time >= STALL_NOTIFICATION_COOLDOWN:
+            message = (
+                f"数据采集失败\n"
+                f"最后记录 ID={last_id}\n"
+                f"最后 SNTPTime={last_record_time}\n"
+                f"连续{STALL_CHECK_COUNT}次({STALL_CHECK_COUNT * STALL_CHECK_INTERVAL}秒)无新数据"
+            )
+            send_wxpusher_notification(message)
+            _last_stall_notification_time = now
+            log_info("[StallCheck] 已发送停滞通知")
+        else:
+            remaining = STALL_NOTIFICATION_COOLDOWN - (now - _last_stall_notification_time)
+            log_info(f"[StallCheck] 数据停滞但冷却中，剩余{int(remaining)}秒")
+
+
 # =============================================
 
 # 全局变量
@@ -1451,5 +1529,7 @@ if __name__ == '__main__':
             schedule.run_pending()
             time.sleep(60)  # 每分钟检查一次即可
     schedule.every().day.at("02:00").do(cleanup_old_data)
+    check_data_collection_stalled()  # 启动后立即执行一次
+    schedule.every(5).minutes.do(check_data_collection_stalled)
     threading.Thread(target=run_cleanup, daemon=True).start()
     app.run(host='0.0.0.0', port=5000, debug=False)
