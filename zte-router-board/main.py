@@ -493,6 +493,8 @@ def send_wxpusher_notification(message):
 
 # ========== 数据采集停滞检测 ==========
 _last_stall_notification_time = 0.0
+_last_cookie_miss_notification_time = 0.0  # "无有效Cookie"通知冷却
+COOKIE_MISS_COOLDOWN = 3600  # Cookie 缺失通知冷却时间（秒）
 STALL_CHECK_INTERVAL = 5  # 每次查询间隔（秒）
 STALL_CHECK_COUNT = 5  # 连续查询次数
 STALL_NOTIFICATION_COOLDOWN = 3600  # 通知冷却时间（秒）
@@ -726,6 +728,12 @@ def fetch_and_process():
         session, source = get_effective_cookie_and_session()
         if session is None:
             log_info("无有效Cookie，跳过本次采集")
+            global _last_cookie_miss_notification_time
+            now = time.time()
+            if now - _last_cookie_miss_notification_time >= COOKIE_MISS_COOLDOWN:
+                send_wxpusher_notification("无有效Cookie，跳过本次数据采集")
+                _last_cookie_miss_notification_time = now
+                log_info("[WxPusher] 已发送 Cookie 缺失通知")
             return
         if source != last_used_source:
             log_warning(f"会话切换为 {source}")
