@@ -939,20 +939,22 @@ def fetch_and_process():
                     if not match_auto_qos_device(name, ip, mac, devices_list):
                         continue
 
-                    # 查 DB 中已有 inst_id（用于 Apply/Delete 操作）
+                    # 查 DB 中已有 inst_id 和 qos_is_auto（用于区分手动/自动限速）
                     with sqlite3.connect(DB_FILE) as conn:
                         cur = conn.execute(
-                            "SELECT qos_inst_id FROM device_info WHERE macaddress=?", (mac,))
+                            "SELECT qos_inst_id, qos_is_auto FROM device_info WHERE macaddress=?", (mac,))
                         row = cur.fetchone()
                     inst_id = row[0] if row else None
+                    is_auto = row[1] if (row and row[1]) else 0
 
                     # 判断路由器当前 QoS 状态：以实际 XML 数据为准
                     in_qos_map = mac in qos_map
                     xml_up = qos_map[mac]["qos_max_upload_kbps"] if in_qos_map else 0
                     xml_down = qos_map[mac]["qos_max_download_kbps"] if in_qos_map else 0
                     already_limited = in_qos_map and xml_up == max_up and xml_down == max_down
+                    is_manual_limit = in_qos_map and is_auto == 0  # 路由器有限速且是手动设置的
 
-                    if in_window and max_up > 0 and max_down > 0 and not already_limited:
+                    if in_window and max_up > 0 and max_down > 0 and not already_limited and not is_manual_limit:
                         # 窗口内 + 速率不一致 → 应用自动限速
                         try:
                             token = get_session_token(session)  # 复用 fetch_and_process 已获取的 session
@@ -984,8 +986,8 @@ def fetch_and_process():
                         except Exception as e:
                             log_warning(f"自动限速失败: {name}({mac}), {e}")
 
-                    elif not in_window and already_limited:
-                        # 窗口外 + 路由器已有限速 → 解除自动限速
+                    elif not in_window and already_limited and is_auto == 1:
+                        # 窗口外 + 路由器已有限速 + 是自动限速 → 解除
                         try:
                             if inst_id:
                                 token = get_session_token(session)  # 复用已获取的 session
