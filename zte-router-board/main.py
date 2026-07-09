@@ -39,6 +39,8 @@ DB_FILE = "data/data.db"
 PLUGIN_COOKIE_FILE = "data/router_plugin_cookie.txt"  # 插件 Cookie 持久化文件
 db_lock = threading.Lock()  # 数据库写入锁
 qos_deleting_set = set()  # 正在解除限速的设备 MAC 集合（内存标记）
+MANUAL_QOS_COOLDOWN_SECONDS = 1800  # 手动解除限速后，在此时间内自动限速不重新应用（默认 30 分钟）
+manual_qos_removed = {}  # MAC → 手动解除时的时间戳（用于冷却期判断）
 
 
 # =====================
@@ -953,8 +955,13 @@ def fetch_and_process():
                     xml_down = qos_map[mac]["qos_max_download_kbps"] if in_qos_map else 0
                     already_limited = in_qos_map and xml_up == max_up and xml_down == max_down
                     is_manual_limit = in_qos_map and is_auto == 0  # 路由器有限速且是手动设置的
+                    # 手动解除后的冷却期检查：手动解除后冷却期内跳过自动限速
+                    in_cooldown = mac in manual_qos_removed and (
+                        time.time() - manual_qos_removed[mac]) < MANUAL_QOS_COOLDOWN_SECONDS
+                    if mac in manual_qos_removed and not in_cooldown:
+                        del manual_qos_removed[mac]  # 冷却期已过，清理记录
 
-                    if in_window and max_up > 0 and max_down > 0 and not already_limited and not is_manual_limit:
+                    if in_window and max_up > 0 and max_down > 0 and not already_limited and not is_manual_limit and not in_cooldown:
                         # 窗口内 + 速率不一致 → 应用自动限速
                         try:
                             token = get_session_token(session)  # 复用 fetch_and_process 已获取的 session
@@ -1396,6 +1403,7 @@ def set_qos_limit():
         else:
             # ======== 关闭限速 ========
             qos_deleting_set.add(mac)  # 内存标记，防止采集线程重新填充 QoS
+            manual_qos_removed[mac] = time.time()  # 记录手动解除时间，进入冷却期
 
             with sqlite3.connect(DB_FILE) as conn:
                 cur = conn.execute(
@@ -1466,8 +1474,10 @@ def batch_delete_qos():
         return jsonify({"status": "ok", "message": "没有需要解除的限速", "count": 0})
 
     # 内存标记所有目标设备为"正在删除"，防止采集线程重新填充 QoS
+    now = time.time()
     for mac, _ in mac_list:
         qos_deleting_set.add(mac)
+        manual_qos_removed[mac] = now  # 记录手动解除时间，进入冷却期
 
     session, _ = get_effective_cookie_and_session()
     if session is None:
